@@ -1,0 +1,11 @@
+[package]
+name = "whisper-spike"
+version = "0.1.0"
+edition = "2024"
+
+# Спайк 0.2: свои FFI-биндинги к whisper.cpp из spikes/out (whisper-rs вендорит 1.8.3 без нужного API).
+[dependencies]
+hound = "3"
+
+[build-dependencies]
+bindgen = "0.72"

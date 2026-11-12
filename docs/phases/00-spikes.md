@@ -9,10 +9,10 @@
 Результаты замеров — в раздел «Результаты» этого файла.
 
 ## Шаг 0.1 — Окружение
-- [ ] `git init`, `.gitignore` (target/, модели, тестовые видео)
-- [ ] Проверить версии: rustc/cargo, ffmpeg (`-encoders`, `-hwaccels`, наличие libass, libsvtav1, libvpx, prores_ks), libmpv-dev, Vulkan (`vulkaninfo`), VAAPI (`vainfo`)
-- [ ] Список недостающих пакетов → предложить пользователю команду `apt install` (не ставить без подтверждения)
-- [ ] Записать итог в «Результаты»
+- [x] `git init`, `.gitignore` (target/, модели, тестовые видео)
+- [x] Проверить версии: rustc/cargo, ffmpeg (`-encoders`, `-hwaccels`, наличие libass, libsvtav1, libvpx, prores_ks), libmpv-dev, Vulkan (`vulkaninfo`), VAAPI (`vainfo`)
+- [x] Список недостающих пакетов → предложить пользователю команду `apt install` (не ставить без подтверждения)
+- [x] Записать итог в «Результаты»
 
 ## Шаг 0.2 — Whisper на Vulkan
 - [ ] Собрать whisper.cpp (или `whisper-rs` с Vulkan) — выяснить, что проще и стабильнее
@@ -45,7 +45,44 @@
 - `ARCHITECTURE.md` исправлен там, где гипотезы не подтвердились.
 
 ## Результаты
-_(заполняется по ходу)_
+
+### 0.1 — Окружение (2026-11-12)
+
+Проверка повторяется скриптом `spikes/00-env/check-env.sh`.
+Проект на ПК пользователя: `~/work/shortscutter` (работа идёт по SSH, сессия без Wayland-дисплея).
+
+| Что | Итог |
+|---|---|
+| ОС | Ubuntu 26.04 LTS, ядро 7.0, Hyprland |
+| CPU / RAM | i5-9400F (6 ядер, без HT), 15 ГБ |
+| GPU | RX 6600 (Navi 23), 8 ГБ VRAM, ~2 ГБ занято рабочим столом |
+| Rust | rustc / cargo 1.99.1 (rustup) |
+| Сборка | cmake 4.2, ninja, gcc 15, pkg-config, libclang 21 (для bindgen) — есть |
+| ffmpeg | 8.0.1 (пакет Ubuntu): libass, libx264, libx265, libsvtav1, libvpx-vp9, prores_ks, libopus, aac; фильтры ass, gblur, boxblur, overlay, scale_vaapi, silencedetect, loudnorm |
+| VAAPI | кодирование `h264_vaapi` ✅, `hevc_vaapi` ✅, `av1_vaapi` ❌ (в сборке ffmpeg есть, GPU не умеет); декодирование H.264 ✅ |
+| Vulkan | runtime + RADV есть; llama.cpp видит `Vulkan0: AMD Radeon RX 6600 (RADV NAVI23)`. Нет заголовков, glslc, spirv-headers — нужны для сборки whisper.cpp |
+| libmpv | есть только плеер `mpv` 0.41; `libmpv-dev` не установлен |
+| ROCm | **установлен** (7.2.4, `rocm-hip-sdk`), работает с `HSA_OVERRIDE_GFX_VERSION=10.3.0` |
+
+**Недостающие пакеты** (предложено пользователю, не установлены):
+```
+sudo apt install libvulkan-dev spirv-headers glslc vulkan-tools vainfo libmpv-dev
+```
+`vulkan-tools` и `vainfo` — только для диагностики, остальное нужно для шагов 0.2 и 0.5.
+
+**Что уже есть на машине и пригодится:**
+- `~/work/local-models/bin/vulkan/llama-b11384` и `bin/rocm/llama-b11384` — готовые сборки llama.cpp (b11384).
+- `~/work/local-models/models/` — GGUF: Qwen3.5-9B, Ornith-1.0-9B, Gemma 4 12B QAT, LFM2.5-8B-A1B (влезают в VRAM)
+  и MoE 20–48B (с выгрузкой на CPU). Кандидаты для 0.3 — первые четыре.
+- `~/.cache/com.autosubs/.../ggml-small.bin` — модель whisper.cpp small (large-v3-turbo в формате ggml нужно скачать).
+- `~/work/local-models/PLAN.md` — замеры пользователя llama.cpp ROCm vs Vulkan на этой карте.
+
+**Находки:**
+- ffmpeg перечисляет `av1_vaapi`, но кодировать им нельзя → возможности кодеков проверять пробным кодированием,
+  а не по списку `-encoders` (для этапа 7).
+- Из замеров пользователя: llama.cpp на 6 потоках проседает в разы, если занято хоть одно ядро → запускать с `-t 4`.
+  Для 9B целиком в VRAM ROCm и Vulkan равны на генерации (~31 ток/с), ROCm быстрее на чтении контекста (~×1.1).
+  Для приложения остаёмся на Vulkan (переносимость), ROCm можно сравнить на 0.3.
 
 ## Передача дальше
 _(заполняется в конце этапа)_

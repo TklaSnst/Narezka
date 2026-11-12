@@ -6,11 +6,11 @@
 **Читать перед началом:** `docs/ARCHITECTURE.md` §2, §3, §6, §7; «Передача дальше» этапа 0.
 
 ## Шаг 1.1 — Workspace и модель
-- [ ] Cargo workspace с crates из `ARCHITECTURE.md` §2 (пустые там, где пока не нужны)
-- [ ] `core`: типы Batch / Source / Short / Template (минимальный: фон-blur + одно основное видео) с serde
-- [ ] `i18n`: Fluent, файлы `ru.ftl`/`en.ftl`, переключение языка
-- [ ] Пути XDG, `settings.toml` (чтение/запись с дефолтами)
-- [ ] Тесты сериализации модели
+- [x] Cargo workspace с crates из `ARCHITECTURE.md` §2 (пустые там, где пока не нужны)
+- [x] `core`: типы Batch / Source / Short / Template (минимальный: фон-blur + одно основное видео) с serde
+- [x] `i18n`: Fluent, файлы `ru.ftl`/`en.ftl`, переключение языка
+- [x] Пути XDG, `settings.toml` (чтение/запись с дефолтами)
+- [x] Тесты сериализации модели
 
 ## Шаг 1.2 — Медиа и импорт
 - [ ] `media`: ffprobe → длительность, разрешение, fps, аудио; хэш файла (быстрый: размер + куски)
@@ -34,4 +34,22 @@
 - Приложение запускается на Hyprland без ошибок, интерфейс на русском и английском.
 
 ## Передача дальше
-_(заполняется в конце этапа)_
+
+### Шаг 1.1 (2026-11-12) — сделан
+- Workspace в корне репо, `crates/*`; спайки исключены (`exclude = ["spikes"]`). Пакеты называются `sc-<имя>`
+  (`sc-core`, `sc-i18n`…), бинарник — пакет `shortscutter` в `crates/app`. Имя `core` занято встроенным крейтом Rust.
+- `sc-core`: `geometry` (`Rect` в долях, `Color` ↔ `#RRGGBB[AA]`), `template` (`Template::minimal()` — blur + 16:9 по центру,
+  `validate()`, TOML с тегом `type`), `batch` (`Batch`/`Source`/`Short`/`OutputSettings`, id — UUID; `add_short`/`update_short`
+  проверяют границы, длительность исходника и перекрытия; отклонённые шортсы перекрытиям не мешают), `paths` (XDG,
+  `Paths::with_root` для тестов), `settings` (`#[serde(default)]` — недостающие поля из дефолтов, атомарная запись,
+  битый файл → `settings.toml.bad` + дефолты).
+- `sc-i18n`: `I18n::tr/tr_args`, `locales/{ru,en}.ftl` встроены `include_str!`; тест сверяет наборы ключей RU/EN;
+  русские плюралы работают через CLDR (`one/few/many`). Изоляция направления выключена — egui рисует U+2068 как мусор.
+- `shortscutter` (app): вкладки-заглушки, переключение языка в «Настройках» сразу сохраняет `settings.toml`.
+- Проверено: `cargo test --workspace` (18 тестов), `cargo clippy` без предупреждений, окно на RU/EN в headless sway.
+
+Неочевидное:
+- egui/eframe 0.36: `App::ui(&mut self, ui, frame)` вместо `update(ctx)`, панели — `egui::Panel::top/bottom(...).show(ui, …)`.
+- В headless sway eframe пишет `Failed to initialize arboard clipboard … X11` — безвредно (нет X11); на Hyprland проверить буфер обмена.
+- `Settings::allow_overlaps` пока не используется моделью — `Batch` перекрытия запрещает всегда; подключить, когда появится UI настройки.
+- clippy поставлен в тулчейн пользователя (`rustup component add clippy`).

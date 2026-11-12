@@ -1,0 +1,18 @@
+[package]
+name = "shortscutter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sc-core.workspace = true
+sc-media.workspace = true
+sc-analysis.workspace = true
+sc-raster.workspace = true
+sc-compositor.workspace = true
+sc-render.workspace = true
+sc-library.workspace = true
+sc-i18n.workspace = true
+eframe.workspace = true
+log.workspace = true
+env_logger.workspace = true

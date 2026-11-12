@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Спайки этапа 0 — отдельные проекты со своими Cargo.toml.
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+sc-core = { path = "crates/core" }
+sc-media = { path = "crates/media" }
+sc-analysis = { path = "crates/analysis" }
+sc-raster = { path = "crates/raster" }
+sc-compositor = { path = "crates/compositor" }
+sc-render = { path = "crates/render" }
+sc-library = { path = "crates/library" }
+sc-i18n = { path = "crates/i18n" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "6"
+log = "0.4"
+env_logger = "0.11"
+fluent-bundle = "0.16"
+fluent-syntax = "0.12"
+unic-langid = { version = "0.9", features = ["macros"] }
+tempfile = "3"
+eframe = { version = "0.36", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+
+[profile.dev.package."*"]
+opt-level = 2

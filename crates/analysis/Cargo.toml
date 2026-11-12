@@ -1,0 +1,8 @@
+[package]
+name = "sc-analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sc-core.workspace = true

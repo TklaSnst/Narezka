@@ -1,0 +1,8 @@
+{"type":"object","properties":{
+ "reason":{"type":"string"},
+ "standalone":{"type":"boolean"},
+ "score":{"type":"integer","minimum":1,"maximum":10},
+ "start":{"type":"integer"},"end":{"type":"integer"},
+ "title":{"type":"string"},
+ "keywords":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":5}},
+ "required":["reason","standalone","score","start","end","title","keywords"]}

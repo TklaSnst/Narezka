@@ -1,0 +1,4 @@
+{"type":"object","properties":{"blocks":{"type":"array","minItems":1,"items":{"type":"object","properties":{
+ "start":{"type":"integer"},
+ "kind":{"type":"string","enum":["content","intro","outro","ad"]},
+ "topic":{"type":"string"}},"required":["start","kind","topic"]}}},"required":["blocks"]}

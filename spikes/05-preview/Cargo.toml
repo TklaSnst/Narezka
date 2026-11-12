@@ -1,0 +1,9 @@
+[package]
+name = "preview-spike"
+version = "0.1.0"
+edition = "2024"
+
+# Спайк 0.5: eframe (glow) + libmpv render API → текстура в egui, blur-шейдер, точный seek, отрезок [in, out].
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+raw-window-handle = "0.6"

@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/target/
+
+# Модели ИИ (whisper, llama, эмбеддинги)
+/models/
+*.gguf
+*.bin
+
+# Тестовые видео и артефакты спайков
+/media/
+/spikes/out/
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.wav
+
+# Редакторы / ОС
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -16,3 +16,4 @@ sc-i18n.workspace = true
 eframe.workspace = true
 log.workspace = true
 env_logger.workspace = true
+rfd = "0.17"

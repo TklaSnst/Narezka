@@ -37,6 +37,8 @@ pub struct Settings {
     pub allow_overlaps: bool,
     /// Вывод по умолчанию для новой пачки.
     pub output: OutputSettings,
+    /// Папка, из которой в прошлый раз добавляли видео.
+    pub last_import_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -46,6 +48,7 @@ impl Default for Settings {
             render_jobs: 2,
             allow_overlaps: false,
             output: OutputSettings { conflict_policy: ConflictPolicy::Continue, ..Default::default() },
+            last_import_dir: None,
         }
     }
 }

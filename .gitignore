@@ -1,23 +1,58 @@
-# Rust
+# --- Rust ---
 /target/
 **/target/
+**/*.rs.bk
+*.pdb
 
-# Модели ИИ (whisper, llama, эмбеддинги)
+# --- Модели ИИ (whisper, llama, эмбеддинги) — большие, качаются отдельно ---
 /models/
 *.gguf
-*.bin
+*.ggml
+ggml-*.bin
+*.onnx
+*.safetensors
 
-# Тестовые видео и артефакты спайков
+# --- Медиа: тестовые ролики и результаты рендера ---
 /media/
-/spikes/out/
+/out/
 *.mp4
 *.mkv
 *.webm
 *.mov
+*.m4a
 *.wav
+*.mp3
+*.opus
 
-# Редакторы / ОС
+# --- Спайки: сборки сторонних проектов и артефакты замеров ---
+/spikes/out/
+/spikes/**/build/
+
+# --- Логи, профилирование, временное ---
+*.log
+perf.data*
+flamegraph.svg
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# --- Окружение и секреты ---
+.env
+.env.*
+.direnv/
+.envrc
+
+# --- Редакторы / ОС ---
 .idea/
 .vscode/
+.zed/
+.helix/
 *.swp
+*.swo
+*~
 .DS_Store
+Thumbs.db
+
+# --- Claude Code: локальные настройки ---
+.claude/settings.local.json

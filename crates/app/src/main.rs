@@ -1,6 +1,7 @@
 //! ShortsCutter — точка входа: окно, вкладки, фоновые задачи.
 
 mod cut;
+mod export;
 mod fmt;
 mod import;
 mod jobs;
@@ -13,6 +14,7 @@ use sc_i18n::I18n;
 use sc_media::{Capabilities, EncoderKind};
 
 use cut::CutState;
+use export::ExportState;
 use jobs::{Jobs, Msg};
 use player::Player;
 
@@ -58,6 +60,7 @@ struct App {
     player: Option<Player>,
     player_error: Option<String>,
     cut: CutState,
+    export: ExportState,
 }
 
 impl App {
@@ -86,6 +89,7 @@ impl App {
             player,
             player_error,
             cut: CutState::default(),
+            export: ExportState::default(),
         }
     }
 
@@ -99,6 +103,8 @@ impl App {
                 }
                 Msg::Picked(paths) => self.on_picked(paths),
                 Msg::Probed { id, result } => self.on_probed(id, result),
+                Msg::PickedDir(dir) => self.on_picked_dir(dir),
+                Msg::Render(ev) => self.on_render(ev),
             }
         }
     }
@@ -237,7 +243,14 @@ impl eframe::App for App {
                 ui.label(self.i18n.tr_args("batch-summary", &[("sources", n.into())]));
                 ui.separator();
                 ui.label(self.caps_summary());
-                if let Some(s) = &self.status {
+                if let Some((fraction, n, total)) = self.export.overall() {
+                    ui.separator();
+                    let pct = (fraction * 100.0).round() as i64;
+                    ui.label(self.i18n.tr_args(
+                        "export-status-running",
+                        &[("n", (n as i64).into()), ("total", (total as i64).into()), ("pct", pct.into())],
+                    ));
+                } else if let Some(s) = &self.status {
                     ui.separator();
                     ui.label(s);
                 }
@@ -246,6 +259,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
             Tab::Import => self.import_ui(ui),
             Tab::Cut => self.cut_ui(ui),
+            Tab::Export => self.export_ui(ui),
             Tab::Settings => self.settings_ui(ui),
             _ => {
                 ui.label(self.i18n.tr("placeholder-not-ready"));

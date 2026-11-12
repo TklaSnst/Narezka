@@ -8,12 +8,30 @@ use eframe::egui;
 use sc_core::{MediaInfo, SourceId};
 use sc_media::{Capabilities, MediaError};
 
+use crate::export::RenderEvent;
+
 pub enum Msg {
     Caps(Capabilities),
     /// Файлы из диалога; пустой список — диалог закрыт без выбора.
     Picked(Vec<PathBuf>),
     /// ffprobe + хэш; ошибка — ключ i18n.
     Probed { id: SourceId, result: Result<(MediaInfo, String), &'static str> },
+    /// Папка вывода из диалога; `None` — диалог закрыт без выбора.
+    PickedDir(Option<PathBuf>),
+    Render(RenderEvent),
+}
+
+/// Отправитель для долгих задач, которые шлют несколько сообщений (рендер).
+pub struct Notifier {
+    tx: Sender<Msg>,
+    ctx: egui::Context,
+}
+
+impl Notifier {
+    pub fn send(&self, msg: Msg) {
+        let _ = self.tx.send(msg);
+        self.ctx.request_repaint();
+    }
 }
 
 pub struct Jobs {
@@ -35,6 +53,10 @@ impl Jobs {
             let _ = tx.send(f());
             ctx.request_repaint();
         });
+    }
+
+    pub fn notifier(&self) -> Notifier {
+        Notifier { tx: self.tx.clone(), ctx: self.ctx.clone() }
     }
 
     pub fn drain(&self) -> impl Iterator<Item = Msg> + '_ {

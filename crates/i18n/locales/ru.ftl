@@ -87,3 +87,38 @@ cut-err-bad-range = Конец шортса должен быть позже н�
 cut-err-out-of-source = Шортс выходит за конец ролика
 cut-err-overlap = Шортс пересекается с другим шортсом
 cut-err-unknown = Шортс или ролик не найден
+
+export-output = Вывод
+export-dir = Папка
+export-dir-next-to-source = рядом с исходником
+export-dir-pick = Выбрать…
+export-dir-reset = Рядом с исходником
+export-dir-dialog = Папка для шортсов
+export-base-name = Имя файлов
+export-name-example = например, { $example }
+export-encoder = Кодировщик: { $name }, { $mbps } Мбит/с
+export-no-encoder = Нет рабочего кодировщика H.264 — проверьте ffmpeg на вкладке «Настройки»
+export-start = { $n ->
+    [0] Нет шортсов для рендера
+    [one] Рендер: { $n } шортс
+    [few] Рендер: { $n } шортса
+   *[many] Рендер: { $n } шортсов
+}
+export-nothing = Отметьте шортсы на вкладке «Нарезка».
+export-progress = Шортс { $n } из { $total }: { $name }
+export-overall = Всего
+export-cancel = Отмена
+export-cancelled = Рендер отменён, недописанный файл удалён.
+export-status-running = Рендер { $n }/{ $total } · { $pct }%
+export-status-done = { $n ->
+    [0] Рендер завершён, готовых файлов нет
+    [one] Рендер завершён: { $n } файл
+    [few] Рендер завершён: { $n } файла
+   *[many] Рендер завершён: { $n } файлов
+}
+export-status-cancelled = { $n ->
+    [0] Рендер отменён
+    [one] Рендер отменён, готов { $n } файл
+    [few] Рендер отменён, готово { $n } файла
+   *[many] Рендер отменён, готово { $n } файлов
+}

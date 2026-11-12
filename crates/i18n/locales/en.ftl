@@ -85,3 +85,35 @@ cut-err-bad-range = The short must end after it starts
 cut-err-out-of-source = The short goes past the end of the video
 cut-err-overlap = The short overlaps another short
 cut-err-unknown = Short or video not found
+
+export-output = Output
+export-dir = Folder
+export-dir-next-to-source = next to the source
+export-dir-pick = Choose…
+export-dir-reset = Next to the source
+export-dir-dialog = Folder for shorts
+export-base-name = File name
+export-name-example = e.g. { $example }
+export-encoder = Encoder: { $name }, { $mbps } Mbit/s
+export-no-encoder = No working H.264 encoder — check ffmpeg on the Settings tab
+export-start = { $n ->
+    [0] No shorts to render
+    [one] Render { $n } short
+   *[other] Render { $n } shorts
+}
+export-nothing = Mark shorts on the Cut tab.
+export-progress = Short { $n } of { $total }: { $name }
+export-overall = Total
+export-cancel = Cancel
+export-cancelled = Render cancelled, the partial file was removed.
+export-status-running = Rendering { $n }/{ $total } · { $pct }%
+export-status-done = { $n ->
+    [0] Render finished, no files produced
+    [one] Render finished: { $n } file
+   *[other] Render finished: { $n } files
+}
+export-status-cancelled = { $n ->
+    [0] Render cancelled
+    [one] Render cancelled, { $n } file finished
+   *[other] Render cancelled, { $n } files finished
+}

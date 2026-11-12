@@ -1,0 +1,10 @@
+[0:v]split=3[bg][f][g];
+[bg]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,gblur=sigma=10,eq=brightness=-0.12:saturation=0.8,scale=1080:1920[bgb];
+[f]crop=532:292:20:440,scale=1000:548,format=yuva420p[fc];
+[fc][1:v]alphamerge[fa];
+[g]crop=982:1080:600:0,scale=1000:1100,format=yuva420p[gc];
+[gc][2:v]alphamerge[ga];
+[bgb][fa]overlay=40:190[t1];
+[t1][ga]overlay=40:760[t2];
+[t2][3:v]overlay=0:8[t3];
+[t3]ass=ASSETS/subs.ass,format=yuv420p[out]

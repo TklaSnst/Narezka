@@ -34,6 +34,29 @@ impl Rect {
             && self.y + self.h <= 1.0 + EPS
     }
 
+    /// Участок источника с соотношением сторон `src_aspect`, который заполняет область с `dst_aspect`
+    /// без искажений («cover»): по центру, лишние края обрезаются.
+    pub fn cover(src_aspect: f32, dst_aspect: f32) -> Rect {
+        if src_aspect > dst_aspect {
+            let w = dst_aspect / src_aspect;
+            Rect::new((1.0 - w) / 2.0, 0.0, w, 1.0)
+        } else {
+            let h = src_aspect / dst_aspect;
+            Rect::new(0.0, (1.0 - h) / 2.0, 1.0, h)
+        }
+    }
+
+    /// `inner` задан в долях этого прямоугольника → в тех же координатах, что и он сам.
+    pub fn sub(&self, inner: Rect) -> Rect {
+        Rect::new(self.x + inner.x * self.w, self.y + inner.y * self.h, inner.w * self.w, inner.h * self.h)
+    }
+
+    /// Уменьшенный в `k` раз относительно центра (`k` ≥ 1 — «приблизить»).
+    pub fn zoom_center(&self, k: f32) -> Rect {
+        let (w, h) = (self.w / k, self.h / k);
+        Rect::new(self.x + (self.w - w) / 2.0, self.y + (self.h - h) / 2.0, w, h)
+    }
+
     /// В пикселях для области `width`×`height`, округлено до чётных (требование yuv420).
     pub fn to_pixels_even(&self, width: u32, height: u32) -> (u32, u32, u32, u32) {
         let even = |v: f32| ((v / 2.0).round() as u32) * 2;
@@ -127,5 +150,22 @@ mod tests {
         // 16:9 по центру холста 1080×1920
         let r = Rect::new(0.0, 0.341_797, 1.0, 0.316_406);
         assert_eq!(r.to_pixels_even(1080, 1920), (0, 656, 1080, 608));
+    }
+
+    fn close(a: Rect, b: Rect) -> bool {
+        [a.x - b.x, a.y - b.y, a.w - b.w, a.h - b.h].iter().all(|d| d.abs() < 1e-5)
+    }
+
+    #[test]
+    fn cover_sub_zoom() {
+        // 16:9 на 9:16 — узкая полоса по центру
+        let c = Rect::cover(16.0 / 9.0, 9.0 / 16.0);
+        assert!(close(c, Rect::new(0.341_796_9, 0.0, 0.316_406_2, 1.0)), "{c:?}");
+        // 4:3 на 16:9 — срезаются верх и низ
+        assert!(close(Rect::cover(4.0 / 3.0, 16.0 / 9.0), Rect::new(0.0, 0.125, 1.0, 0.75)));
+        assert!(close(Rect::cover(1.0, 1.0), Rect::FULL));
+        let half = Rect::new(0.5, 0.0, 0.5, 1.0);
+        assert!(close(half.sub(Rect::new(0.5, 0.5, 0.5, 0.5)), Rect::new(0.75, 0.5, 0.25, 0.5)));
+        assert!(close(Rect::FULL.zoom_center(2.0), Rect::new(0.25, 0.25, 0.5, 0.5)));
     }
 }

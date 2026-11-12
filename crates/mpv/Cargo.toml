@@ -1,0 +1,10 @@
+[package]
+name = "sc-mpv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Свои FFI-объявления к libmpv (client.h + render_gl.h): только асинхронные вызовы и render API.
+[dependencies]
+thiserror.workspace = true
+log.workspace = true

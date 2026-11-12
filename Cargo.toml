@@ -18,6 +18,7 @@ sc-compositor = { path = "crates/compositor" }
 sc-render = { path = "crates/render" }
 sc-library = { path = "crates/library" }
 sc-i18n = { path = "crates/i18n" }
+sc-mpv = { path = "crates/mpv" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -31,6 +32,8 @@ fluent-bundle = "0.16"
 fluent-syntax = "0.12"
 unic-langid = { version = "0.9", features = ["macros"] }
 tempfile = "3"
+# Версия — та же, что у eframe (типы текстур передаются между ними).
+glow = "0.17"
 eframe = { version = "0.36", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
 
 [profile.dev.package."*"]

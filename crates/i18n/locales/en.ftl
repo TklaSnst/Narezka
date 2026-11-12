@@ -58,3 +58,30 @@ caps-missing-filters = ffmpeg build lacks filters: { $filters }
 caps-vaapi-device = VAAPI device: { $device }
 caps-kind-gpu = GPU
 caps-kind-cpu = CPU
+
+cut-sources = Videos
+cut-no-sources = Add videos on the Import tab first.
+cut-source-not-ready = The video is still being read or failed to open
+cut-shorts-count = { $n ->
+    [one] { $n } short
+   *[other] { $n } shorts
+}
+cut-player-failed = Preview unavailable (libmpv): { $error }
+cut-open-failed = Could not open the video: { $error }
+cut-preview-empty = Pick a video on the left
+cut-preview-loading = Loading…
+cut-play = Play / pause (Space)
+cut-frame-back = Previous frame (←), Shift+← — 5 s back
+cut-frame-fwd = Next frame (→), Shift+→ — 5 s forward
+cut-mark-in = [ In (I)
+cut-mark-out = Out (O) ]
+cut-add-short = + Short (Enter)
+cut-delete-short = Delete (Del)
+cut-zoom-fit = Whole video
+cut-timeline-hint = Wheel — zoom, Shift+wheel — scroll, click — seek. Drag the edges of the selected short to adjust it. Esc — deselect.
+cut-shorts-empty = No shorts yet: mark the start (I) and end (O), then press Enter.
+cut-err-no-in = Mark the start first (I)
+cut-err-bad-range = The short must end after it starts
+cut-err-out-of-source = The short goes past the end of the video
+cut-err-overlap = The short overlaps another short
+cut-err-unknown = Short or video not found

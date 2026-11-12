@@ -105,7 +105,7 @@ impl App {
                     ui.label(file_name(&s.path)).on_hover_text(s.path.display().to_string());
                     match &s.info {
                         Some(info) => {
-                            ui.label(fmt_duration(info.duration));
+                            ui.label(crate::fmt::duration(info.duration));
                             ui.label(format!("{}×{}", info.width, info.height));
                             ui.label(format!("{:.3}", info.fps).trim_end_matches('0').trim_end_matches('.').to_owned());
                             ui.label(self.i18n.tr(if info.has_audio { "import-audio-yes" } else { "import-audio-no" }));
@@ -153,23 +153,6 @@ impl App {
     }
 }
 
-fn file_name(path: &std::path::Path) -> String {
+pub(crate) fn file_name(path: &std::path::Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
-}
-
-/// 75.4 → «1:15», 6612 → «1:50:12».
-fn fmt_duration(secs: f64) -> String {
-    let t = secs.round() as u64;
-    let (h, m, s) = (t / 3600, t / 60 % 60, t % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn durations() {
-        assert_eq!(super::fmt_duration(75.4), "1:15");
-        assert_eq!(super::fmt_duration(6612.0), "1:50:12");
-        assert_eq!(super::fmt_duration(0.2), "0:00");
-    }
 }

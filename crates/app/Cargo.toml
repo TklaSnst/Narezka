@@ -13,7 +13,10 @@ sc-compositor.workspace = true
 sc-render.workspace = true
 sc-library.workspace = true
 sc-i18n.workspace = true
+sc-mpv.workspace = true
 eframe.workspace = true
 log.workspace = true
 env_logger.workspace = true
 rfd = "0.17"
+# wl_display окна для mpv (VAAPI на Wayland); версия — как у eframe.
+raw-window-handle = "0.6"

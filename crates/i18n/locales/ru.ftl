@@ -59,3 +59,31 @@ caps-missing-filters = В сборке ffmpeg нет фильтров: { $filter
 caps-vaapi-device = Устройство VAAPI: { $device }
 caps-kind-gpu = GPU
 caps-kind-cpu = CPU
+
+cut-sources = Ролики
+cut-no-sources = Сначала добавьте ролики на вкладке «Импорт».
+cut-source-not-ready = Ролик ещё читается или не открылся
+cut-shorts-count = { $n ->
+    [one] { $n } шортс
+    [few] { $n } шортса
+   *[many] { $n } шортсов
+}
+cut-player-failed = Превью недоступно (libmpv): { $error }
+cut-open-failed = Не удалось открыть ролик: { $error }
+cut-preview-empty = Выберите ролик слева
+cut-preview-loading = Загрузка…
+cut-play = Воспроизведение / пауза (Пробел)
+cut-frame-back = Кадр назад (←), Shift+← — на 5 с
+cut-frame-fwd = Кадр вперёд (→), Shift+→ — на 5 с
+cut-mark-in = [ Начало (I)
+cut-mark-out = Конец (O) ]
+cut-add-short = + Шортс (Enter)
+cut-delete-short = Удалить (Del)
+cut-zoom-fit = Весь ролик
+cut-timeline-hint = Колесо — масштаб, Shift+колесо — прокрутка, клик — перемотка. Края выбранного шортса можно тянуть. Esc — снять выбор.
+cut-shorts-empty = Шортсов пока нет: отметьте начало (I) и конец (O) и нажмите Enter.
+cut-err-no-in = Сначала отметьте начало (I)
+cut-err-bad-range = Конец шортса должен быть позже начала
+cut-err-out-of-source = Шортс выходит за конец ролика
+cut-err-overlap = Шортс пересекается с другим шортсом
+cut-err-unknown = Шортс или ролик не найден

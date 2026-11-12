@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 sc-core.workspace = true
+glow.workspace = true

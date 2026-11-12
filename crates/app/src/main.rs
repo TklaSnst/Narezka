@@ -1,14 +1,20 @@
 //! ShortsCutter — точка входа: окно, вкладки, фоновые задачи.
 
+mod cut;
+mod fmt;
 mod import;
 mod jobs;
+mod player;
+mod timeline;
 
-use eframe::egui;
+use eframe::{egui, glow};
 use sc_core::{Batch, Language, Paths, Settings};
 use sc_i18n::I18n;
 use sc_media::{Capabilities, EncoderKind};
 
+use cut::CutState;
 use jobs::{Jobs, Msg};
+use player::Player;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -48,12 +54,23 @@ struct App {
     dialog_open: bool,
     /// winit 0.30 не умеет drag-and-drop на Wayland — подсказку показываем только на X11.
     dnd_supported: bool,
+    /// `None` — libmpv не поднялся (причина в `player_error`), превью недоступно.
+    player: Option<Player>,
+    player_error: Option<String>,
+    cut: CutState,
 }
 
 impl App {
-    fn new(ctx: egui::Context, paths: Paths, settings: Settings) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, paths: Paths, settings: Settings) -> Self {
         let batch = Batch { output: settings.output.clone(), ..Default::default() };
-        let jobs = Jobs::new(ctx);
+        let jobs = Jobs::new(cc.egui_ctx.clone());
+        let (player, player_error) = match Player::new(cc) {
+            Ok(p) => (Some(p), None),
+            Err(e) => {
+                log::error!("превью недоступно: {e}");
+                (None, Some(e))
+            }
+        };
         jobs.spawn(|| Msg::Caps(Capabilities::detect()));
         Self {
             i18n: I18n::new(settings.language),
@@ -66,6 +83,9 @@ impl App {
             caps: None,
             dialog_open: false,
             dnd_supported: std::env::var_os("WAYLAND_DISPLAY").is_none(),
+            player,
+            player_error,
+            cut: CutState::default(),
         }
     }
 
@@ -185,13 +205,29 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.poll_jobs();
         self.handle_drop(&ui.ctx().clone());
+        self.cut_sync();
+        if let Some(p) = &mut self.player {
+            // Превью играет только на своей вкладке.
+            if self.tab != Tab::Cut {
+                p.set_paused(true);
+            }
+            p.pump(frame, &self.batch.template);
+        }
+        // Ctrl+1…6 — вкладки по порядку.
+        let digits = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6];
+        if let Some(tab) = ui.input(|i| {
+            i.modifiers.command.then(|| Tab::ALL.iter().zip(digits).find(|(_, k)| i.key_pressed(*k)).map(|(t, _)| *t)).flatten()
+        }) {
+            self.tab = tab;
+        }
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 for tab in Tab::ALL {
-                    ui.selectable_value(&mut self.tab, tab, self.i18n.tr(tab.key()));
+                    ui.selectable_value(&mut self.tab, tab, self.i18n.tr(tab.key()))
+                        .on_hover_text(format!("Ctrl+{}", Tab::ALL.iter().position(|t| *t == tab).unwrap_or(0) + 1));
                 }
             });
         });
@@ -209,16 +245,28 @@ impl eframe::App for App {
         });
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
             Tab::Import => self.import_ui(ui),
+            Tab::Cut => self.cut_ui(ui),
             Tab::Settings => self.settings_ui(ui),
             _ => {
                 ui.label(self.i18n.tr("placeholder-not-ready"));
             }
         });
+        if let Some(p) = &self.player {
+            p.end_frame();
+        }
+    }
+
+    fn on_exit(&mut self, gl: Option<&glow::Context>) {
+        // render context mpv освобождается при текущем GL-контексте.
+        if let (Some(p), Some(gl)) = (self.player.take(), gl) {
+            p.destroy(gl);
+        }
     }
 }
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    sc_mpv::set_c_numeric_locale();
 
     let paths = Paths::from_env().expect("не удалось определить домашний каталог");
     if let Err(e) = paths.ensure() {
@@ -231,6 +279,8 @@ fn main() -> eframe::Result {
     let initial: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
 
     let options = eframe::NativeOptions {
+        // Превью — через GL (mpv render API → текстура), поэтому только glow.
+        renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
             .with_app_id("shortscutter")
@@ -241,7 +291,7 @@ fn main() -> eframe::Result {
         &title,
         options,
         Box::new(|cc| {
-            let mut app = App::new(cc.egui_ctx.clone(), paths, settings);
+            let mut app = App::new(cc, paths, settings);
             app.add_paths(initial);
             Ok(Box::new(app))
         }),

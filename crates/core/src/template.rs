@@ -67,6 +67,22 @@ pub enum TemplateError {
     NoMainVideo,
 }
 
+/// Участок кадра исходника `src` (ширина, высота в пикселях), который идёт на размытый фон:
+/// «cover» на весь холст, приближенный в `scale` раз. Одна формула для превью и рендера.
+pub fn background_crop(scale: f32, src: (u32, u32), canvas: Canvas) -> Rect {
+    let src_aspect = src.0 as f32 / src.1 as f32;
+    let canvas_aspect = canvas.width as f32 / canvas.height as f32;
+    Rect::cover(src_aspect, canvas_aspect).zoom_center(scale.max(1.0))
+}
+
+/// Какая часть исходника реально попадает в `dest`: `crop` из шаблона, подрезанный по центру
+/// под пропорции `dest`, чтобы видео не растягивалось (исходник может быть не 16:9).
+pub fn main_video_crop(crop: Rect, src: (u32, u32), dest: Rect, canvas: Canvas) -> Rect {
+    let crop_aspect = crop.w * src.0 as f32 / (crop.h * src.1 as f32);
+    let dest_aspect = dest.w * canvas.width as f32 / (dest.h * canvas.height as f32);
+    crop.sub(Rect::cover(crop_aspect, dest_aspect))
+}
+
 impl Template {
     /// Минимальный шаблон этапа 1: размытый фон и исходник 16:9 по центру во всю ширину.
     pub fn minimal() -> Self {
@@ -136,6 +152,22 @@ mod tests {
     #[test]
     fn minimal_is_valid() {
         Template::minimal().validate().unwrap();
+    }
+
+    #[test]
+    fn crops_keep_aspect() {
+        let canvas = Canvas::default();
+        let Layer::MainVideo { crop, dest, .. } = Template::minimal().layers[0];
+        // 16:9 в минимальном шаблоне — без подрезки
+        let c = main_video_crop(crop, (1920, 1080), dest, canvas);
+        assert!((c.w - 1.0).abs() < 1e-3 && (c.h - 1.0).abs() < 1e-3, "{c:?}");
+        // 4:3 — срезаются верх и низ
+        let c = main_video_crop(crop, (1440, 1080), dest, canvas);
+        assert!((c.w - 1.0).abs() < 1e-3 && (c.h - 0.75).abs() < 1e-3, "{c:?}");
+        // фон: полоса 9:16 из 16:9, при scale = 2 — вдвое меньше
+        let b1 = background_crop(1.0, (1920, 1080), canvas);
+        let b2 = background_crop(2.0, (1920, 1080), canvas);
+        assert!((b1.h - 1.0).abs() < 1e-5 && (b2.w * 2.0 - b1.w).abs() < 1e-5);
     }
 
     #[test]

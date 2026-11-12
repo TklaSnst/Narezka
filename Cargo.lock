@@ -2230,6 +2230,7 @@ dependencies = [
 name = "sc-compositor"
 version = "0.1.0"
 dependencies = [
+ "glow",
  "sc-core",
 ]
 
@@ -2275,6 +2276,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sc-mpv"
+version = "0.1.0"
+dependencies = [
+ "log",
  "thiserror 2.0.21",
 ]
 
@@ -2381,6 +2390,7 @@ dependencies = [
  "eframe",
  "env_logger",
  "log",
+ "raw-window-handle",
  "rfd",
  "sc-analysis",
  "sc-compositor",
@@ -2388,6 +2398,7 @@ dependencies = [
  "sc-i18n",
  "sc-library",
  "sc-media",
+ "sc-mpv",
  "sc-raster",
  "sc-render",
 ]

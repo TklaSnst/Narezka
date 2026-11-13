@@ -68,6 +68,17 @@ impl Rect {
     }
 }
 
+/// Покрытие (0..1) пикселя с центром `(px, py)` скруглённым прямоугольником `w`×`h` с углом в (0, 0) и радиусом `r`:
+/// расстояние со знаком до края, сглаживание на один пиксель. Одна формула для масок, рамок и шейдера превью.
+pub fn rounded_rect_coverage(w: f32, h: f32, r: f32, px: f32, py: f32) -> f32 {
+    let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+    let qx = (px - w / 2.0).abs() - (w / 2.0 - r);
+    let qy = (py - h / 2.0).abs() - (h / 2.0 - r);
+    let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+    let dist = outside + qx.max(qy).min(0.0) - r;
+    (0.5 - dist).clamp(0.0, 1.0)
+}
+
 /// Цвет RGBA. В файлах — строка `#RRGGBB` или `#RRGGBBAA`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color(pub [u8; 4]);

@@ -73,6 +73,7 @@ impl App {
                 Some(RenderJob {
                     input: source.path.clone(),
                     src_size: (info.width, info.height),
+                    src_fps: info.fps,
                     has_audio: info.has_audio,
                     start: short.start,
                     end: short.end,

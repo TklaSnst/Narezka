@@ -1,0 +1,11 @@
+name = "terminal-test"
+background = { type = "blur", darken = 0.35, scale = 1.4 }
+[[layers]]
+type = "shape"
+rect = { x = 0.0, y = 0.45, w = 1.0, h = 0.55 }
+paint = { type = "linear", from = "#00000000", to = "#000000", angle = 0 }
+[[layers]]
+type = "main_video"
+crop = { x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
+dest = { x = 0.0, y = 0.33, w = 1.0, h = 0.3164 }
+border = { width = 0.003, color = "#39ff7a" }

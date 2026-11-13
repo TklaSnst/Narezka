@@ -4,8 +4,7 @@
 use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Sense, Vec2};
 use sc_analysis::{BlockKind, Transcript};
 use sc_core::{
-    Background, BatchError, Layer, Short, ShortFlag, ShortId, ShortStatus, SourceId, SourceStatus, Template, TimeRange,
-    main_video_crop,
+    BatchError, Short, ShortFlag, ShortId, ShortStatus, SourceId, SourceStatus, Template, TimeRange,
 };
 
 use crate::App;
@@ -424,7 +423,7 @@ impl App {
             });
         });
         egui::CentralPanel::default().show(ui, |ui| {
-            let player = self.player.as_ref().unwrap();
+            let player = self.player.as_mut().unwrap();
             if let Some(e) = &player.state.error {
                 ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr_args("cut-open-failed", &[("error", e.clone().into())]));
             }
@@ -840,47 +839,27 @@ impl App {
     }
 }
 
-/// Холст 9:16 по шаблону: фон (размытый кадр или цвет) и кадр основного видео.
-fn preview_canvas(ui: &egui::Ui, area: Rect, player: &Player, template: &Template, empty_text: &str) {
+/// Холст 9:16 по шаблону, собранный композитором; размер на экране сообщается плееру.
+fn preview_canvas(ui: &egui::Ui, area: Rect, player: &mut Player, template: &Template, empty_text: &str) {
     let (cw, ch) = (template.canvas.width as f32, template.canvas.height as f32);
     let mut size = Vec2::new(area.height() * cw / ch, area.height());
     if size.x > area.width() {
         size = Vec2::new(area.width(), area.width() * ch / cw);
     }
-    let canvas = Rect::from_center_size(area.center(), size);
+    // Холст — по целым физическим пикселям: текстура показывается один к одному, без пересэмплирования.
+    let ppp = ui.ctx().pixels_per_point();
+    let (pw, ph) = ((size.x * ppp).floor().max(2.0), (size.y * ppp).floor().max(2.0));
+    let canvas = Rect::from_center_size(area.center(), Vec2::new(pw, ph) / ppp);
+    player.request_canvas(pw as u32, ph as u32);
+
     let painter = ui.painter_at(canvas);
-    let uv_full = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-    let to_screen = |r: sc_core::Rect| {
-        Rect::from_min_size(
-            canvas.min + Vec2::new(r.x * canvas.width(), r.y * canvas.height()),
-            Vec2::new(r.w * canvas.width(), r.h * canvas.height()),
-        )
-    };
-
     painter.rect_filled(canvas, 0.0, Color32::BLACK);
-    match &template.background {
-        Background::Blur { .. } => {
-            if let Some(bg) = player.background_texture() {
-                painter.image(bg, canvas, uv_full, Color32::WHITE);
-            }
+    match player.canvas_texture() {
+        Some(tex) => {
+            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+            painter.image(tex, canvas, uv, Color32::WHITE);
         }
-        Background::Color { color } => {
-            let [r, g, b, a] = color.0;
-            painter.rect_filled(canvas, 0.0, Color32::from_rgba_unmultiplied(r, g, b, a));
-        }
-    }
-
-    match (player.video_texture(), player.src_size()) {
-        (Some(tex), Some(src)) => {
-            for layer in &template.layers {
-                let Layer::MainVideo { crop, dest, corner_radius } = layer;
-                let uv = main_video_crop(*crop, src, *dest, template.canvas);
-                let uv = Rect::from_min_size(Pos2::new(uv.x, uv.y), Vec2::new(uv.w, uv.h));
-                let radius = corner_radius * canvas.width();
-                painter.add(egui::epaint::RectShape::filled(to_screen(*dest), radius, Color32::WHITE).with_texture(tex, uv));
-            }
-        }
-        _ => {
+        None => {
             painter.text(canvas.center(), egui::Align2::CENTER_CENTER, empty_text, egui::FontId::proportional(16.0), Color32::GRAY);
         }
     }

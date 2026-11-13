@@ -68,7 +68,10 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, paths: Paths, settings: Settings) -> Self {
-        let batch = Batch { output: settings.output.clone(), ..Default::default() };
+        let mut batch = Batch { output: settings.output.clone(), ..Default::default() };
+        if let Some(t) = dev_template() {
+            batch.template = t;
+        }
         let jobs = Jobs::new(cc.egui_ctx.clone());
         let (player, player_error) = match Player::new(cc) {
             Ok(p) => (Some(p), None),
@@ -288,6 +291,25 @@ impl eframe::App for App {
         // render context mpv освобождается при текущем GL-контексте.
         if let (Some(p), Some(gl)) = (self.player.take(), gl) {
             p.destroy(gl);
+        }
+    }
+}
+
+/// Шаблон из файла `SC_TEMPLATE` (для разработки, пока нет выбора шаблонов в интерфейсе — шаг 3.5).
+fn dev_template() -> Option<sc_core::Template> {
+    let path = std::env::var_os("SC_TEMPLATE")?;
+    let parsed = std::fs::read_to_string(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|s| sc_core::Template::from_toml(&s).map_err(|e| e.to_string()))
+        .and_then(|t| t.validate().map(|()| t).map_err(|e| e.to_string()));
+    match parsed {
+        Ok(t) => {
+            log::info!("шаблон из SC_TEMPLATE: {}", t.name);
+            Some(t)
+        }
+        Err(e) => {
+            log::error!("SC_TEMPLATE {path:?}: {e}");
+            None
         }
     }
 }

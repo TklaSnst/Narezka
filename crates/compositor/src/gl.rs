@@ -1,4 +1,4 @@
-//! GL-примитивы превью: текстура с FBO и двухпроходный gaussian blur.
+//! GL-примитивы превью: текстура с FBO, загрузка растров, двухпроходный gaussian blur.
 
 use glow::HasContext;
 
@@ -74,6 +74,67 @@ impl Target {
     }
 }
 
+/// Программа из вершинного и фрагментного шейдера (заголовок версии — под GL или GLES).
+///
+/// # Safety
+/// GL-контекст должен быть текущим.
+pub unsafe fn program(gl: &glow::Context, vs: &str, fs: &str) -> Result<glow::Program, String> {
+    unsafe {
+        let header =
+            if gl.version().is_embedded { "#version 300 es\nprecision highp float;\n" } else { "#version 330 core\n" };
+        let prog = gl.create_program()?;
+        let mut shaders = vec![];
+        for (ty, src) in [(glow::VERTEX_SHADER, vs), (glow::FRAGMENT_SHADER, fs)] {
+            let s = gl.create_shader(ty)?;
+            gl.shader_source(s, &format!("{header}{src}"));
+            gl.compile_shader(s);
+            if !gl.get_shader_compile_status(s) {
+                return Err(gl.get_shader_info_log(s));
+            }
+            gl.attach_shader(prog, s);
+            shaders.push(s);
+        }
+        gl.link_program(prog);
+        for s in shaders {
+            gl.delete_shader(s);
+        }
+        if !gl.get_program_link_status(prog) {
+            return Err(gl.get_program_info_log(prog));
+        }
+        Ok(prog)
+    }
+}
+
+/// Текстура RGBA8 из растра (строка 0 — верх) с мипмапами: растры в размере холста показываются уменьшенными.
+///
+/// # Safety
+/// GL-контекст должен быть текущим.
+pub unsafe fn upload_rgba(gl: &glow::Context, w: u32, h: u32, data: &[u8]) -> Result<glow::Texture, String> {
+    unsafe {
+        let tex = gl.create_texture()?;
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            w as i32,
+            h as i32,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(data)),
+        );
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+        gl.generate_mipmap(glow::TEXTURE_2D);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        Ok(tex)
+    }
+}
+
 const VS: &str = r#"
 out vec2 v_uv;
 void main() {
@@ -132,27 +193,7 @@ impl Blur {
     /// GL-контекст должен быть текущим.
     pub unsafe fn new(gl: &glow::Context) -> Result<Self, String> {
         unsafe {
-            let header =
-                if gl.version().is_embedded { "#version 300 es\nprecision highp float;\n" } else { "#version 330 core\n" };
-            let prog = gl.create_program()?;
-            let mut shaders = vec![];
-            for (ty, src) in [(glow::VERTEX_SHADER, VS), (glow::FRAGMENT_SHADER, FS)] {
-                let s = gl.create_shader(ty)?;
-                gl.shader_source(s, &format!("{header}{src}"));
-                gl.compile_shader(s);
-                if !gl.get_shader_compile_status(s) {
-                    return Err(gl.get_shader_info_log(s));
-                }
-                gl.attach_shader(prog, s);
-                shaders.push(s);
-            }
-            gl.link_program(prog);
-            for s in shaders {
-                gl.delete_shader(s);
-            }
-            if !gl.get_program_link_status(prog) {
-                return Err(gl.get_program_info_log(prog));
-            }
+            let prog = program(gl, VS, FS)?;
             let vao = gl.create_vertex_array()?;
             Ok(Self { prog, vao, a: None, b: None })
         }

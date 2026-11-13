@@ -1,0 +1,8 @@
+name = "gradient-test"
+background = { type = "gradient", from = "#1b2a4a", to = "#000000", angle = 20 }
+[[layers]]
+type = "main_video"
+crop = { x = 0.25, y = 0.0, w = 0.5, h = 1.0 }
+dest = { x = 0.1, y = 0.2, w = 0.8, h = 0.6 }
+corner_radius = 0.06
+border = { width = 0.004, color = "#ffffff80" }

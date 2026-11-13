@@ -6,4 +6,5 @@ license.workspace = true
 
 [dependencies]
 sc-core.workspace = true
+sc-raster.workspace = true
 glow.workspace = true

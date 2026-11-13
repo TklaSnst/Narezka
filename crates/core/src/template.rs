@@ -1,4 +1,7 @@
-//! Шаблон оформления шортса. Все координаты — в долях холста (см. DECISIONS).
+//! Шаблон оформления шортса. Все координаты — в долях холста, длины (радиусы, толщины, кегль) —
+//! в долях ширины холста (см. DECISIONS): шаблон одинаково выглядит при любом выходном разрешении.
+
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +41,85 @@ pub enum Background {
         scale: f32,
     },
     Color { color: Color },
+    /// Линейный градиент на весь холст.
+    Gradient { from: Color, to: Color, #[serde(default)] angle: f32 },
+    /// Картинка «заполнить холст» (лишнее срезается по центру).
+    Image {
+        path: PathBuf,
+        #[serde(default)]
+        darken: f32,
+    },
+    /// Видео «заполнить холст», по кругу, без звука.
+    Video {
+        path: PathBuf,
+        #[serde(default)]
+        darken: f32,
+    },
+}
+
+/// Заливка фигуры.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Paint {
+    Solid { color: Color },
+    /// `angle` в градусах: 0 — `from` сверху, `to` снизу; 90 — слева направо.
+    Linear { from: Color, to: Color, #[serde(default)] angle: f32 },
+}
+
+/// Рамка по внутреннему краю слоя (не меняет его размер).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Border {
+    pub width: f32,
+    pub color: Color,
+}
+
+/// Тень под слоем: та же фигура со смещением и размытием.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Shadow {
+    pub color: Color,
+    /// Радиус размытия (0 — жёсткая тень).
+    #[serde(default)]
+    pub blur: f32,
+    #[serde(default)]
+    pub dx: f32,
+    #[serde(default)]
+    pub dy: f32,
+}
+
+/// Обводка текста.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Outline {
+    pub width: f32,
+    pub color: Color,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Align {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VAlign {
+    Top,
+    #[default]
+    Center,
+    Bottom,
+}
+
+/// Как выделяется акцент `*…*` в тексте.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccentMode {
+    /// Цветом текста.
+    #[default]
+    Color,
+    /// Плашкой цвета акцента под текстом.
+    Plate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,10 +129,83 @@ pub enum Layer {
     MainVideo {
         crop: Rect,
         dest: Rect,
-        /// Радиус скругления в долях ширины холста.
+        /// Радиус скругления.
+        #[serde(default)]
+        corner_radius: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        border: Option<Border>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shadow: Option<Shadow>,
+    },
+    /// Текст; акцент — `*так*`, подстановки `{part}`, `{title}`.
+    Text {
+        rect: Rect,
+        content: String,
+        font: String,
+        /// Кегль.
+        size: f32,
+        color: Color,
+        #[serde(default = "default_accent")]
+        accent_color: Color,
+        #[serde(default)]
+        accent_mode: AccentMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outline: Option<Outline>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shadow: Option<Shadow>,
+        #[serde(default)]
+        align: Align,
+        #[serde(default)]
+        valign: VAlign,
+    },
+    /// Картинка «вписать» в `rect` с сохранением пропорций.
+    Image {
+        rect: Rect,
+        path: PathBuf,
+        #[serde(default = "one")]
+        opacity: f32,
+    },
+    /// Капсула: скруглённая плашка с логотипом слева и текстом.
+    Capsule {
+        rect: Rect,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        logo: Option<PathBuf>,
+        text: String,
+        font: String,
+        text_color: Color,
+        fill: Color,
+    },
+    /// Прямоугольник с заливкой (плашка, затемнение-градиент).
+    Shape {
+        rect: Rect,
+        paint: Paint,
         #[serde(default)]
         corner_radius: f32,
     },
+    /// Место под баннер пачки (этап 5).
+    BannerSlot { rect: Rect },
+}
+
+fn default_accent() -> Color {
+    Color::rgb(0xff, 0x3b, 0x30)
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+impl Layer {
+    /// Прямоугольник слоя на холсте.
+    pub fn rect(&self) -> Rect {
+        match self {
+            Layer::MainVideo { dest, .. } => *dest,
+            Layer::Text { rect, .. }
+            | Layer::Image { rect, .. }
+            | Layer::Capsule { rect, .. }
+            | Layer::Shape { rect, .. }
+            | Layer::BannerSlot { rect } => *rect,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -59,10 +214,10 @@ pub enum TemplateError {
     BadCanvas(u32, u32),
     #[error("слой {layer}: прямоугольник «{field}» выходит за 0..1 или пустой")]
     BadRect { layer: usize, field: &'static str },
-    #[error("слой {0}: недопустимый радиус скругления")]
-    BadRadius(usize),
-    #[error("фон: значение вне допустимого диапазона")]
-    BadBackground,
+    #[error("слой {layer}: недопустимое значение «{field}»")]
+    BadValue { layer: usize, field: &'static str },
+    #[error("фон: значение «{0}» вне допустимого диапазона")]
+    BadBackground(&'static str),
     #[error("в шаблоне нет ни одного слоя основного видео")]
     NoMainVideo,
 }
@@ -83,6 +238,11 @@ pub fn main_video_crop(crop: Rect, src: (u32, u32), dest: Rect, canvas: Canvas) 
     crop.sub(Rect::cover(crop_aspect, dest_aspect))
 }
 
+/// [`main_video_crop`] в пикселях исходника (чётные) — именно этот участок берут и рендер, и превью.
+pub fn main_video_crop_px(crop: Rect, src: (u32, u32), dest: Rect, canvas: Canvas) -> (u32, u32, u32, u32) {
+    main_video_crop(crop, src, dest, canvas).to_pixels_even(src.0, src.1)
+}
+
 impl Template {
     /// Минимальный шаблон этапа 1: размытый фон и исходник 16:9 по центру во всю ширину.
     pub fn minimal() -> Self {
@@ -96,8 +256,18 @@ impl Template {
                 crop: Rect::FULL,
                 dest: Rect::new(0.0, (1.0 - h) / 2.0, 1.0, h),
                 corner_radius: 0.0,
+                border: None,
+                shadow: None,
             }],
         }
+    }
+
+    /// Слои основного видео: (индекс слоя, crop, dest).
+    pub fn main_videos(&self) -> impl Iterator<Item = (usize, Rect, Rect)> + '_ {
+        self.layers.iter().enumerate().filter_map(|(i, l)| match l {
+            Layer::MainVideo { crop, dest, .. } => Some((i, *crop, *dest)),
+            _ => None,
+        })
     }
 
     pub fn validate(&self) -> Result<(), TemplateError> {
@@ -105,29 +275,71 @@ impl Template {
         if width < 16 || height < 16 || width % 2 != 0 || height % 2 != 0 {
             return Err(TemplateError::BadCanvas(width, height));
         }
-        match self.background {
+        let unit = |v: f32| (0.0..=1.0).contains(&v);
+        let bg = |ok: bool, field| if ok { Ok(()) } else { Err(TemplateError::BadBackground(field)) };
+        match &self.background {
             Background::Blur { darken, scale } => {
-                if !(0.0..=1.0).contains(&darken) || !(1.0..=4.0).contains(&scale) {
-                    return Err(TemplateError::BadBackground);
-                }
+                bg(unit(*darken), "darken")?;
+                bg((1.0..=4.0).contains(scale), "scale")?;
             }
             Background::Color { .. } => {}
+            Background::Gradient { angle, .. } => bg(angle.is_finite(), "angle")?,
+            Background::Image { path, darken } | Background::Video { path, darken } => {
+                bg(!path.as_os_str().is_empty(), "path")?;
+                bg(unit(*darken), "darken")?;
+            }
         }
+
         let mut has_main = false;
         for (i, layer) in self.layers.iter().enumerate() {
+            let rect = |r: &Rect, field| {
+                if r.is_valid_fraction() { Ok(()) } else { Err(TemplateError::BadRect { layer: i, field }) }
+            };
+            let value = |ok: bool, field| if ok { Ok(()) } else { Err(TemplateError::BadValue { layer: i, field }) };
+            let shadow = |s: &Option<Shadow>| match s {
+                Some(s) => {
+                    value((0.0..=0.2).contains(&s.blur), "shadow.blur")?;
+                    value(s.dx.abs() <= 0.2 && s.dy.abs() <= 0.2, "shadow.offset")
+                }
+                None => Ok(()),
+            };
             match layer {
-                Layer::MainVideo { crop, dest, corner_radius } => {
+                Layer::MainVideo { crop, dest, corner_radius, border, shadow: sh } => {
                     has_main = true;
-                    if !crop.is_valid_fraction() {
-                        return Err(TemplateError::BadRect { layer: i, field: "crop" });
+                    rect(crop, "crop")?;
+                    rect(dest, "dest")?;
+                    value((0.0..=0.5).contains(corner_radius), "corner_radius")?;
+                    if let Some(b) = border {
+                        value(b.width > 0.0 && b.width <= 0.1, "border.width")?;
                     }
-                    if !dest.is_valid_fraction() {
-                        return Err(TemplateError::BadRect { layer: i, field: "dest" });
+                    shadow(sh)?;
+                }
+                Layer::Text { rect: r, font, size, outline, shadow: sh, .. } => {
+                    rect(r, "rect")?;
+                    value(!font.is_empty(), "font")?;
+                    value((0.005..=0.5).contains(size), "size")?;
+                    if let Some(o) = outline {
+                        value(o.width > 0.0 && o.width <= 0.05, "outline.width")?;
                     }
-                    if !(0.0..=0.5).contains(corner_radius) {
-                        return Err(TemplateError::BadRadius(i));
+                    shadow(sh)?;
+                }
+                Layer::Image { rect: r, path, opacity } => {
+                    rect(r, "rect")?;
+                    value(!path.as_os_str().is_empty(), "path")?;
+                    value(unit(*opacity), "opacity")?;
+                }
+                Layer::Capsule { rect: r, font, .. } => {
+                    rect(r, "rect")?;
+                    value(!font.is_empty(), "font")?;
+                }
+                Layer::Shape { rect: r, paint, corner_radius } => {
+                    rect(r, "rect")?;
+                    value((0.0..=0.5).contains(corner_radius), "corner_radius")?;
+                    if let Paint::Linear { angle, .. } = paint {
+                        value(angle.is_finite(), "paint.angle")?;
                     }
                 }
+                Layer::BannerSlot { rect: r } => rect(r, "rect")?,
             }
         }
         if !has_main {
@@ -145,6 +357,21 @@ impl Template {
     }
 }
 
+/// Линейный градиент: доля `to` (0..1) в точке `(x, y)` прямоугольника `w`×`h` (пиксели от его угла).
+/// Угол 0 — сверху вниз, 90 — слева направо; градиент проходит от угла до угла вдоль направления,
+/// как в CSS `linear-gradient`. Одна формула для превью и рендера.
+pub fn gradient_t(angle_deg: f32, w: f32, h: f32, x: f32, y: f32) -> f32 {
+    let a = angle_deg.to_radians();
+    // Направление: 0° — вниз (+y), 90° — вправо (+x).
+    let (dx, dy) = (a.sin(), a.cos());
+    let half = (w * dx.abs() + h * dy.abs()) / 2.0;
+    if half <= 0.0 {
+        return 0.0;
+    }
+    let p = (x - w / 2.0) * dx + (y - h / 2.0) * dy;
+    (p / (2.0 * half) + 0.5).clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,7 +384,7 @@ mod tests {
     #[test]
     fn crops_keep_aspect() {
         let canvas = Canvas::default();
-        let Layer::MainVideo { crop, dest, .. } = Template::minimal().layers[0];
+        let (_, crop, dest) = Template::minimal().main_videos().next().unwrap();
         // 16:9 в минимальном шаблоне — без подрезки
         let c = main_video_crop(crop, (1920, 1080), dest, canvas);
         assert!((c.w - 1.0).abs() < 1e-3 && (c.h - 1.0).abs() < 1e-3, "{c:?}");
@@ -172,11 +399,31 @@ mod tests {
 
     #[test]
     fn toml_roundtrip() {
-        let t = Template::minimal();
+        let mut t = Template::minimal();
+        t.layers.push(Layer::Shape {
+            rect: Rect::new(0.0, 0.6, 1.0, 0.4),
+            paint: Paint::Linear { from: Color([0, 0, 0, 0]), to: Color::BLACK, angle: 0.0 },
+            corner_radius: 0.0,
+        });
+        t.layers.push(Layer::Text {
+            rect: Rect::new(0.05, 0.1, 0.9, 0.1),
+            content: "ТОП *языков*".into(),
+            font: "Press Start 2P".into(),
+            size: 0.05,
+            color: Color::WHITE,
+            accent_color: default_accent(),
+            accent_mode: AccentMode::Plate,
+            outline: Some(Outline { width: 0.004, color: Color::BLACK }),
+            shadow: None,
+            align: Align::Center,
+            valign: VAlign::Bottom,
+        });
         let s = t.to_toml();
         assert!(s.contains("type = \"blur\""), "{s}");
         assert!(s.contains("type = \"main_video\""), "{s}");
+        assert!(!s.contains("border"), "пустые Option не пишутся: {s}");
         assert_eq!(Template::from_toml(&s).unwrap(), t);
+        t.validate().unwrap();
     }
 
     #[test]
@@ -184,17 +431,27 @@ mod tests {
         let t = Template::from_toml(
             r##"
             name = "цвет"
-            background = { type = "color", color = "#101820" }
+            background = { type = "gradient", from = "#101820", to = "#000000" }
 
             [[layers]]
             type = "main_video"
             crop = { x = 0.25, y = 0.0, w = 0.5, h = 1.0 }
             dest = { x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
+            border = { width = 0.003, color = "#33ff66" }
+            shadow = { color = "#00000080", blur = 0.02, dy = 0.01 }
+
+            [[layers]]
+            type = "image"
+            rect = { x = 0.4, y = 0.02, w = 0.2, h = 0.1 }
+            path = "/tmp/logo.png"
             "##,
         )
         .unwrap();
         assert_eq!(t.canvas, Canvas::default());
-        assert_eq!(t.background, Background::Color { color: Color::rgb(0x10, 0x18, 0x20) });
+        assert_eq!(t.background, Background::Gradient { from: Color::rgb(0x10, 0x18, 0x20), to: Color::BLACK, angle: 0.0 });
+        let Layer::MainVideo { shadow: Some(s), .. } = &t.layers[0] else { panic!() };
+        assert_eq!((s.blur, s.dx, s.dy), (0.02, 0.0, 0.01));
+        assert_eq!(t.layers[1], Layer::Image { rect: Rect::new(0.4, 0.02, 0.2, 0.1), path: "/tmp/logo.png".into(), opacity: 1.0 });
         t.validate().unwrap();
     }
 
@@ -205,12 +462,35 @@ mod tests {
         assert_eq!(t.validate(), Err(TemplateError::BadCanvas(1081, 1920)));
 
         let mut t = Template::minimal();
-        let Layer::MainVideo { dest, .. } = &mut t.layers[0];
+        let Layer::MainVideo { dest, .. } = &mut t.layers[0] else { panic!() };
         dest.y = 0.9;
         assert_eq!(t.validate(), Err(TemplateError::BadRect { layer: 0, field: "dest" }));
 
         let mut t = Template::minimal();
-        t.layers.clear();
+        let Layer::MainVideo { border, .. } = &mut t.layers[0] else { panic!() };
+        *border = Some(Border { width: 0.0, color: Color::WHITE });
+        assert_eq!(t.validate(), Err(TemplateError::BadValue { layer: 0, field: "border.width" }));
+
+        let mut t = Template::minimal();
+        t.background = Background::Image { path: PathBuf::new(), darken: 0.0 };
+        assert_eq!(t.validate(), Err(TemplateError::BadBackground("path")));
+
+        let mut t = Template::minimal();
+        t.layers = vec![Layer::BannerSlot { rect: Rect::FULL }];
         assert_eq!(t.validate(), Err(TemplateError::NoMainVideo));
+    }
+
+    #[test]
+    fn gradient_directions() {
+        // 0° — сверху вниз
+        assert_eq!(gradient_t(0.0, 100.0, 200.0, 50.0, 0.0), 0.0);
+        assert_eq!(gradient_t(0.0, 100.0, 200.0, 50.0, 200.0), 1.0);
+        assert!((gradient_t(0.0, 100.0, 200.0, 0.0, 100.0) - 0.5).abs() < 1e-6);
+        // 90° — слева направо
+        assert!(gradient_t(90.0, 100.0, 200.0, 0.0, 100.0) < 1e-6);
+        assert!((gradient_t(90.0, 100.0, 200.0, 100.0, 0.0) - 1.0).abs() < 1e-6);
+        // 45° — от угла до угла
+        assert!(gradient_t(45.0, 100.0, 100.0, 0.0, 0.0) < 1e-6);
+        assert!((gradient_t(45.0, 100.0, 100.0, 100.0, 100.0) - 1.0).abs() < 1e-6);
     }
 }

@@ -12,7 +12,10 @@ pub use batch::{
     Batch, BatchError, Codec, ConflictPolicy, Container, EncoderPref, MediaInfo, OutputSettings,
     MIN_SPLIT, Short, ShortFlag, ShortId, ShortStatus, Source, SourceId, SourceStatus, TimeRange,
 };
-pub use geometry::{Color, Rect};
+pub use geometry::{Color, Rect, rounded_rect_coverage};
 pub use paths::Paths;
 pub use settings::{AnalysisSettings, Language, Settings};
-pub use template::{Background, Canvas, Layer, Template, TemplateError, background_crop, main_video_crop};
+pub use template::{
+    Align, AccentMode, Background, Border, Canvas, Layer, Outline, Paint, Shadow, Template, TemplateError, VAlign,
+    background_crop, gradient_t, main_video_crop, main_video_crop_px,
+};

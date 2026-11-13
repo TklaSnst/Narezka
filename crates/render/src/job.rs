@@ -8,7 +8,9 @@ use std::thread;
 
 use sc_core::{Codec, Container, OutputSettings, Template};
 
-use crate::graph::{self, GraphParams};
+use sc_raster::Art;
+
+use crate::graph::{self, GraphParams, Input};
 use crate::naming::part_path;
 
 /// Кодировщик, выбранный по `Capabilities` (рендер не проверяет ffmpeg сам).
@@ -25,6 +27,8 @@ pub struct RenderJob {
     pub input: PathBuf,
     /// Размер кадра исходника (после поворота, как в ffprobe).
     pub src_size: (u32, u32),
+    /// Частота кадров исходника (темп фонов-картинок и цвета, если вывод «как у исходника»).
+    pub src_fps: f64,
     pub has_audio: bool,
     /// Отрезок исходника, секунды.
     pub start: f64,
@@ -34,7 +38,7 @@ pub struct RenderJob {
     pub encoder: Encoder,
     /// Итоговый файл; пока идёт рендер, пишется `.<имя>.part` рядом.
     pub dest: PathBuf,
-    /// Каталог для временных файлов задачи (маски); удаляется по завершении.
+    /// Каталог для временных файлов задачи (маски, растры); удаляется по завершении.
     pub work_dir: PathBuf,
 }
 
@@ -46,6 +50,8 @@ pub enum RenderError {
     UnsupportedContainer(&'static str),
     #[error("неверный шаблон: {0}")]
     Template(#[from] sc_core::TemplateError),
+    #[error("{0}")]
+    Raster(#[from] sc_raster::RasterError),
     #[error("не удалось запустить ffmpeg: {0}")]
     Spawn(std::io::Error),
     #[error("ffmpeg завершился с ошибкой: {0}")]
@@ -61,8 +67,9 @@ impl RenderJob {
         (self.end - self.start).max(0.0)
     }
 
-    /// Аргументы ffmpeg (без имени программы) и маски, которые надо записать в `work_dir`.
-    pub fn args(&self) -> Result<(Vec<String>, graph::Graph), RenderError> {
+    /// Аргументы ffmpeg (без имени программы) и граф; его входы надо записать в `work_dir` ([`Self::run`]).
+    /// `art` — растры шаблона задачи (`Art::new(&self.template)`).
+    pub fn args(&self, art: &Art) -> Result<(Vec<String>, graph::Graph), RenderError> {
         self.template.validate()?;
         let codec_args = encoder_args(&self.encoder.name, self.output.video_bitrate_kbps)?;
         let codec = match self.encoder.name.as_str() {
@@ -71,10 +78,14 @@ impl RenderJob {
         };
         let muxer = muxer(self.output.container, codec)?;
         let vaapi = self.encoder.vaapi_device.is_some();
-        let g = graph::build(
-            &self.template,
-            &GraphParams { src: self.src_size, resolution: self.output.resolution, fps: self.output.fps, vaapi },
-        );
+        let params = GraphParams {
+            src: self.src_size,
+            src_fps: self.src_fps,
+            resolution: self.output.resolution,
+            fps: self.output.fps,
+            vaapi,
+        };
+        let g = graph::build(&self.template, art, &params);
 
         let mut a: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y", "-progress", "pipe:1", "-nostats", "-stats_period", "0.25"]
             .map(String::from)
@@ -85,8 +96,15 @@ impl RenderJob {
         // Поиск до -i: быстрый и, при перекодировании, точный до кадра.
         a.extend(["-ss".into(), secs(self.start), "-t".into(), secs(self.duration())]);
         a.extend(["-i".into(), self.input.display().to_string()]);
-        for k in 0..g.masks.len() {
-            a.extend(["-i".into(), self.mask_path(k).display().to_string()]);
+        for (k, input) in g.inputs.iter().enumerate() {
+            match input {
+                Input::Mask(_) | Input::Sprite { .. } => {}
+                Input::BackgroundImage { fps } => {
+                    a.extend(["-loop".into(), "1".into(), "-framerate".into(), format!("{fps:.4}")]);
+                }
+                Input::BackgroundVideo { .. } => a.extend(["-stream_loop".into(), "-1".into()]),
+            }
+            a.extend(["-i".into(), self.input_path(k + 1, input).display().to_string()]);
         }
         a.extend(["-filter_complex".into(), g.filter.clone(), "-map".into(), "[out]".into()]);
         a.extend(codec_args);
@@ -106,14 +124,20 @@ impl RenderJob {
         Ok((a, g))
     }
 
-    fn mask_path(&self, k: usize) -> PathBuf {
-        self.work_dir.join(format!("mask{k}.pgm"))
+    /// Файл входа `n` графа: сгенерированные — в `work_dir`, видео-фон — как есть.
+    fn input_path(&self, n: usize, input: &Input) -> PathBuf {
+        match input {
+            Input::Mask(_) => self.work_dir.join(format!("in{n}.pgm")),
+            Input::Sprite { .. } | Input::BackgroundImage { .. } => self.work_dir.join(format!("in{n}.pam")),
+            Input::BackgroundVideo { path } => path.clone(),
+        }
     }
 
     /// Рендерит; `progress` получает долю 0..1. Отмена — `cancel` в `true`: процесс завершается,
     /// недописанный файл удаляется. Итоговый файл появляется только после успешного завершения.
     pub fn run(&self, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<(), RenderError> {
-        let (args, g) = self.args()?;
+        let art = Art::new(&self.template)?;
+        let (args, g) = self.args(&art)?;
         let io = |path: &Path| {
             let path = path.to_owned();
             move |source| RenderError::Io { path, source }
@@ -122,9 +146,19 @@ impl RenderJob {
         if let Some(dir) = self.dest.parent() {
             std::fs::create_dir_all(dir).map_err(io(dir))?;
         }
-        for (k, m) in g.masks.iter().enumerate() {
-            let path = self.mask_path(k);
-            std::fs::write(&path, graph::mask_pgm(m.width, m.height, m.radius)).map_err(io(&path))?;
+        for (k, input) in g.inputs.iter().enumerate() {
+            let data = match input {
+                Input::Mask(m) => graph::mask_pgm(m.width, m.height, m.radius),
+                Input::Sprite { layer, above } => {
+                    let la = &art.layers[*layer];
+                    let s = if *above { &la.above } else { &la.below };
+                    s.as_ref().expect("вход графа есть только у существующего растра").bitmap.to_pam()
+                }
+                Input::BackgroundImage { .. } => art.background.as_ref().expect("фон-картинка растрирована").to_pam(),
+                Input::BackgroundVideo { .. } => continue,
+            };
+            let path = self.input_path(k + 1, input);
+            std::fs::write(&path, data).map_err(io(&path))?;
         }
         log::info!("ffmpeg {}", args.join(" "));
 
@@ -243,6 +277,7 @@ mod tests {
         RenderJob {
             input: "/in/ролик.mp4".into(),
             src_size: (1920, 1080),
+            src_fps: 60.0,
             has_audio: true,
             start: 61.5,
             end: 91.5,
@@ -255,7 +290,7 @@ mod tests {
     }
 
     fn joined(j: &RenderJob) -> String {
-        j.args().unwrap().0.join(" ")
+        j.args(&Art::new(&j.template).unwrap()).unwrap().0.join(" ")
     }
 
     #[test]
@@ -279,10 +314,11 @@ mod tests {
 
     #[test]
     fn unsupported_combinations() {
-        assert!(matches!(job("libsvtav1", false).args(), Err(RenderError::UnsupportedEncoder(_))));
+        let art = Art::new(&Template::minimal()).unwrap();
+        assert!(matches!(job("libsvtav1", false).args(&art), Err(RenderError::UnsupportedEncoder(_))));
         let mut j = job("libx264", false);
         j.output.container = Container::Webm;
-        assert!(matches!(j.args(), Err(RenderError::UnsupportedContainer("webm"))));
+        assert!(matches!(j.args(&art), Err(RenderError::UnsupportedContainer("webm"))));
     }
 
     #[test]

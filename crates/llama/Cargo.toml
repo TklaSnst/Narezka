@@ -1,0 +1,16 @@
+[package]
+name = "sc-llama"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "llama-server (llama.cpp, Vulkan) отдельным процессом: запуск, ожидание готовности, эмбеддинги"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+ureq = { version = "3", features = ["json"] }
+
+[build-dependencies]
+cmake = "0.1"

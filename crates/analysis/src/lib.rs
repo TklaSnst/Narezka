@@ -1,16 +1,21 @@
 //! Анализ исходника: звук → whisper (Vulkan + VAD) → транскрипт со словами и таймкодами.
 //!
-//! Дальше по этапу 2: предложения и паузы, эмбеддинги, LLM-нарезка (ARCHITECTURE §4).
+//! Структура текста: предложения и паузы ([`sentences`]), границы тем по эмбеддингам ([`topics`]).
+//! Дальше по этапу 2: LLM-нарезка (ARCHITECTURE §4).
 
 pub mod audio;
 pub mod models;
+pub mod sentences;
+pub mod topics;
 pub mod transcript;
 pub mod whisper;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-pub use models::{ModelSpec, SILERO_VAD, WHISPER_TURBO};
+pub use models::{ModelSpec, QWEN3_EMBED, SILERO_VAD, WHISPER_TURBO};
+pub use sentences::{Pause, Sentence, SplitOptions, pauses, sentences};
+pub use topics::{TilingOptions, TopicBoundary, embed_sentences, topic_boundaries};
 pub use transcript::{Segment, Span, Transcript, Word};
 pub use whisper::{Whisper, WhisperOptions};
 

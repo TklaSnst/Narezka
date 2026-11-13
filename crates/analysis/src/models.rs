@@ -36,6 +36,14 @@ pub const SILERO_VAD: ModelSpec = ModelSpec {
     size: 885_098,
 };
 
+/// Эмбеддинги предложений для границ тем (шаг 2.2): Qwen3-Embedding-0.6B Q8_0, многоязычная, ~0.7 ГБ VRAM.
+pub const QWEN3_EMBED: ModelSpec = ModelSpec {
+    file: "Qwen3-Embedding-0.6B-Q8_0.gguf",
+    url: "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    sha256: "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+    size: 639_150_592,
+};
+
 impl ModelSpec {
     pub fn path(&self, dir: &Path) -> PathBuf {
         dir.join(self.file)

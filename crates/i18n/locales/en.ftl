@@ -143,10 +143,23 @@ analysis-err-model-load = Failed to load the speech recognition model
 analysis-err-whisper = Speech recognition failed
 analysis-err-ffmpeg = ffmpeg could not extract audio
 analysis-err-io = File read or write error
+analysis-err-no-llm = Cutting models missing
+analysis-err-prompt = Error in the cutting prompt files
+analysis-err-llm = LLM error while cutting
+analysis-stage-structure = Text structure
+analysis-stage-llm-model = Loading LLM
+analysis-stage-cut = Cutting
+analysis-cut-start = Cut by meaning
+analysis-cut-cancelled = Cutting cancelled
+analysis-recut = Cut again (e.g. after editing the prompts)
+analysis-cut-done = { $n ->
+    [one] { $n } candidate
+   *[other] { $n } candidates
+}
 
 ## Models
-settings-analysis = Speech recognition
-models-needed = Automatic cutting needs speech recognition models. Without them only manual cutting is available.
+settings-analysis = Recognition and cutting
+models-needed = Automatic cutting needs models: speech recognition, text structure and an LLM. Without them only manual cutting is available.
 models-download = Download models ({ $size } GB)
 models-download-cancel = Stop download
 models-downloading = { $file }: { $done } of { $total } GB
@@ -157,6 +170,9 @@ models-reset = Default
 models-reset-hint = Back to the default large-v3-turbo model
 models-whisper = Whisper model
 models-vad = Voice activity detector (VAD)
+models-embed = Embeddings (text structure)
+models-llm = Cutting LLM
+settings-prompts-hint = Custom cutting prompts: pass1-boundaries.md, pass1.schema.json, pass2-score.md, pass2.schema.json in { $dir } replace the built-in ones.
 models-err-network = Model download failed — check the network and retry (it resumes where it stopped)
 models-err-checksum = Downloaded file is corrupted — retry the download
 settings-terms = Term list

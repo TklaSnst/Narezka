@@ -1,4 +1,5 @@
-//! Анализ исходников: очередь распознавания (по одному ролику), транскрипты из кэша, загрузка моделей.
+//! Анализ исходников: очередь (по одному ролику) «распознавание → структура → LLM-нарезка», результаты из кэша,
+//! загрузка моделей. Транскрипт показывается сразу, нарезка приходит следом.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -6,17 +7,30 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
-use sc_analysis::{AnalysisError, ModelSpec, SILERO_VAD, Stage, TranscribeJob, Transcript, WHISPER_TURBO};
+use sc_analysis::{
+    AnalysisError, CutJob, CutOptions, CutStage, Cutting, ModelSpec, Prompts, QWEN3_EMBED, QWEN35_9B, SILERO_VAD, Stage,
+    TranscribeJob, Transcript, WHISPER_TURBO,
+};
 use sc_core::{Settings, Source, SourceId, SourceStatus};
 
 use crate::App;
 use crate::import::file_name;
 use crate::jobs::Msg;
 
+/// Где сейчас анализ ролика.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Transcribe(Stage),
+    Cut(CutStage),
+}
+
 pub enum AnalysisEvent {
-    Progress { id: SourceId, stage: Stage, fraction: f32 },
+    Progress { id: SourceId, step: Step, fraction: f32 },
     /// Ошибка — ключ i18n.
-    Done { id: SourceId, result: Result<Transcript, &'static str> },
+    Transcribed { id: SourceId, result: Result<Transcript, &'static str> },
+    Cut { id: SourceId, result: Result<Cutting, &'static str> },
+    /// Задача ролика закончилась (после всех результатов).
+    Done { id: SourceId },
 }
 
 pub enum DownloadEvent {
@@ -27,7 +41,7 @@ pub enum DownloadEvent {
 struct Running {
     id: SourceId,
     cancel: Arc<AtomicBool>,
-    stage: Stage,
+    step: Step,
     fraction: f32,
 }
 
@@ -44,6 +58,10 @@ pub struct AnalysisState {
     transcripts: HashMap<SourceId, Arc<Transcript>>,
     /// Почему ролик не распознан (ключ i18n); `analysis-cancelled` — отменён пользователем.
     errors: HashMap<SourceId, &'static str>,
+    /// Кандидаты в шортсы (экран «Нарезка» — шаг 2.4).
+    cuttings: HashMap<SourceId, Arc<Cutting>>,
+    /// Почему распознанный ролик не нарезан (ключ i18n).
+    cut_errors: HashMap<SourceId, &'static str>,
     download: Option<Download>,
     download_error: Option<&'static str>,
     /// Словарь терминов в поле ввода — по строке на термин; в настройки уходит при потере фокуса.
@@ -57,6 +75,8 @@ impl AnalysisState {
             running: None,
             transcripts: HashMap::new(),
             errors: HashMap::new(),
+            cuttings: HashMap::new(),
+            cut_errors: HashMap::new(),
             download: None,
             download_error: None,
             terms_text: settings.analysis.terms.join("\n"),
@@ -73,6 +93,7 @@ pub enum RowAction {
     Analyze(SourceId),
     Cancel(SourceId),
     Redo(SourceId),
+    Recut(SourceId),
 }
 
 impl App {
@@ -91,7 +112,13 @@ impl App {
         self.whisper_present() && SILERO_VAD.present(&self.paths.models_dir())
     }
 
-    /// Модели, которых не хватает и которые можно скачать.
+    /// Модели нарезки: эмбеддинги и LLM.
+    fn cut_models_ready(&self) -> bool {
+        let dir = self.paths.models_dir();
+        QWEN3_EMBED.present(&dir) && QWEN35_9B.present(&dir)
+    }
+
+    /// Модели, которых не хватает и которые можно скачать: сначала нужные для распознавания.
     fn missing_models(&self) -> Vec<ModelSpec> {
         let dir = self.paths.models_dir();
         let mut v = Vec::new();
@@ -101,13 +128,14 @@ impl App {
         if self.settings.analysis.whisper_model.is_none() && !WHISPER_TURBO.present(&dir) {
             v.push(WHISPER_TURBO);
         }
+        v.extend([QWEN3_EMBED, QWEN35_9B].into_iter().filter(|m| !m.present(&dir)));
         v
     }
 
-    /// Ставит ролик в очередь; транскрипт из кэша придёт сразу, без загрузки модели.
+    /// Ставит ролик в очередь; транскрипт и нарезка из кэша придут сразу, без загрузки моделей.
     pub(crate) fn enqueue_analysis(&mut self, id: SourceId) {
         let Some(s) = self.batch.source(id) else { return };
-        if self.analysis.busy(id) || self.analysis.transcripts.contains_key(&id) || s.hash.is_none() {
+        if self.analysis.busy(id) || self.analysis.cuttings.contains_key(&id) || s.hash.is_none() {
             return;
         }
         if s.info.as_ref().is_some_and(|i| !i.has_audio) {
@@ -115,6 +143,7 @@ impl App {
             return;
         }
         self.analysis.errors.remove(&id);
+        self.analysis.cut_errors.remove(&id);
         self.analysis.queue.push_back(id);
     }
 
@@ -124,31 +153,71 @@ impl App {
             return;
         }
         while let Some(id) = self.analysis.queue.pop_front() {
-            let Some(job) = self.batch.source(id).and_then(|s| self.transcribe_job(s)) else { continue };
+            let Some(s) = self.batch.source(id) else { continue };
+            let Some(job) = self.transcribe_job(s) else { continue };
+            let cut = self.cut_job(s);
             if let Some(s) = self.batch.source_mut(id) {
                 s.status = SourceStatus::Analyzing;
             }
             let cancel = Arc::new(AtomicBool::new(false));
-            self.analysis.running = Some(Running { id, cancel: cancel.clone(), stage: Stage::Audio, fraction: 0.0 });
+            let step = Step::Transcribe(Stage::Audio);
+            self.analysis.running = Some(Running { id, cancel: cancel.clone(), step, fraction: 0.0 });
             let notify = self.jobs.notifier();
             std::thread::spawn(move || {
-                let mut last = (Stage::Audio, -1.0);
-                let result = job.run(&cancel, |stage, fraction| {
-                    if stage != last.0 || fraction - last.1 >= 0.01 || fraction >= 1.0 {
-                        last = (stage, fraction);
-                        notify.send(Msg::Analysis(AnalysisEvent::Progress { id, stage, fraction }));
+                let mut last = (step, -1.0);
+                let mut report = |step: Step, fraction: f32| {
+                    if step != last.0 || fraction - last.1 >= 0.01 || fraction >= 1.0 {
+                        last = (step, fraction);
+                        notify.send(Msg::Analysis(AnalysisEvent::Progress { id, step, fraction }));
                     }
-                });
-                let result = result.map_err(|e| {
-                    if !matches!(e, AnalysisError::Cancelled) {
-                        log::warn!("анализ {}: {e}", job.input.display());
+                };
+                let name = job.input.display().to_string();
+                let transcript = job.run(&cancel, |stage, f| report(Step::Transcribe(stage), f));
+                let transcript = match transcript {
+                    Ok(t) => {
+                        notify.send(Msg::Analysis(AnalysisEvent::Transcribed { id, result: Ok(t.clone()) }));
+                        Some(t)
                     }
-                    analysis_error_key(&e)
-                });
-                notify.send(Msg::Analysis(AnalysisEvent::Done { id, result }));
+                    Err(e) => {
+                        log_error(&name, &e);
+                        notify.send(Msg::Analysis(AnalysisEvent::Transcribed { id, result: Err(analysis_error_key(&e)) }));
+                        None
+                    }
+                };
+                if let Some(t) = transcript {
+                    let result = match cut {
+                        Ok(cut) => cut.run(&t, &cancel, |stage, f| report(Step::Cut(stage), f)).map_err(|e| {
+                            log_error(&name, &e);
+                            cut_error_key(&e)
+                        }),
+                        Err(key) => Err(key),
+                    };
+                    notify.send(Msg::Analysis(AnalysisEvent::Cut { id, result }));
+                }
+                notify.send(Msg::Analysis(AnalysisEvent::Done { id }));
             });
             return;
         }
+    }
+
+    /// Задача нарезки; ошибка (ключ i18n) — если промпты не читаются.
+    fn cut_job(&self, s: &Source) -> Result<CutJob, &'static str> {
+        let prompts = Prompts::load(&self.paths.prompts_dir()).map_err(|e| {
+            log::warn!("промпты нарезки: {e}");
+            "analysis-err-prompt"
+        })?;
+        let dir = self.paths.models_dir();
+        Ok(CutJob {
+            hash: s.hash.clone().unwrap_or_default(),
+            cache_dir: self.paths.analysis_dir(),
+            embed_model: QWEN3_EMBED.path(&dir),
+            llm_model: QWEN35_9B.path(&dir),
+            prompts,
+            opts: CutOptions {
+                title: s.path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                ..CutOptions::default()
+            },
+        })
     }
 
     fn transcribe_job(&self, s: &Source) -> Option<TranscribeJob> {
@@ -166,16 +235,31 @@ impl App {
 
     pub(crate) fn on_analysis(&mut self, ev: AnalysisEvent) {
         match ev {
-            AnalysisEvent::Progress { id, stage, fraction } => {
+            AnalysisEvent::Progress { id, step, fraction } => {
                 if let Some(r) = self.analysis.running.as_mut().filter(|r| r.id == id) {
-                    r.stage = stage;
+                    r.step = step;
                     r.fraction = fraction;
                 }
             }
-            AnalysisEvent::Done { id, result } => {
+            AnalysisEvent::Done { id } => {
                 if self.analysis.running.as_ref().is_some_and(|r| r.id == id) {
                     self.analysis.running = None;
                 }
+            }
+            AnalysisEvent::Cut { id, result } => {
+                if self.batch.source(id).is_none() {
+                    return; // убран из пачки во время работы
+                }
+                match result {
+                    Ok(c) => {
+                        self.analysis.cuttings.insert(id, Arc::new(c));
+                    }
+                    Err(key) => {
+                        self.analysis.cut_errors.insert(id, key);
+                    }
+                }
+            }
+            AnalysisEvent::Transcribed { id, result } => {
                 let Some(s) = self.batch.source_mut(id) else { return }; // убран из пачки во время работы
                 match result {
                     Ok(t) => {
@@ -206,17 +290,31 @@ impl App {
         self.cancel_analysis(id);
         self.analysis.transcripts.remove(&id);
         self.analysis.errors.remove(&id);
+        self.analysis.cuttings.remove(&id);
+        self.analysis.cut_errors.remove(&id);
     }
 
-    /// Распознать заново — например, после правки словаря терминов.
+    /// Распознать заново — например, после правки словаря терминов. Нарезка — тоже заново.
     fn redo_analysis(&mut self, id: SourceId) {
         if let Some(hash) = self.batch.source(id).and_then(|s| s.hash.clone()) {
-            let _ = std::fs::remove_file(Transcript::cache_file(&self.paths.analysis_dir(), &hash));
+            let dir = self.paths.analysis_dir();
+            let _ = std::fs::remove_file(Transcript::cache_file(&dir, &hash));
+            let _ = std::fs::remove_file(Cutting::cache_file(&dir, &hash));
         }
         self.analysis.transcripts.remove(&id);
+        self.analysis.cuttings.remove(&id);
         if let Some(s) = self.batch.source_mut(id) {
             s.status = SourceStatus::Ready;
         }
+        self.enqueue_analysis(id);
+    }
+
+    /// Нарезать заново по тому же транскрипту — например, после правки промптов.
+    fn recut(&mut self, id: SourceId) {
+        if let Some(hash) = self.batch.source(id).and_then(|s| s.hash.clone()) {
+            let _ = std::fs::remove_file(Cutting::cache_file(&self.paths.analysis_dir(), &hash));
+        }
+        self.analysis.cuttings.remove(&id);
         self.enqueue_analysis(id);
     }
 
@@ -225,6 +323,7 @@ impl App {
             RowAction::Analyze(id) => self.enqueue_analysis(id),
             RowAction::Cancel(id) => self.cancel_analysis(id),
             RowAction::Redo(id) => self.redo_analysis(id),
+            RowAction::Recut(id) => self.recut(id),
         }
     }
 
@@ -247,8 +346,8 @@ impl App {
         ui.horizontal(|ui| {
             if let Some(r) = self.analysis.running.as_ref().filter(|r| r.id == id) {
                 let bar = egui::ProgressBar::new(r.fraction).desired_width(180.0).text(self.stage_text(r));
-                // У загрузки модели и VAD нет прогресса — только анимация.
-                ui.add(bar.animate(matches!(r.stage, Stage::Model | Stage::Vad)));
+                // У загрузки моделей и VAD нет прогресса — только анимация.
+                ui.add(bar.animate(!has_progress(r.step)));
                 let cancelling = r.cancel.load(Ordering::Relaxed);
                 let stop = egui::Button::new(self.i18n.tr("analysis-stop")).small();
                 if ui.add_enabled(!cancelling, stop).on_hover_text(self.i18n.tr("analysis-cancel")).clicked() {
@@ -262,6 +361,24 @@ impl App {
             } else if let Some(t) = self.analysis.transcripts.get(&id) {
                 let n = t.words.len() as i64;
                 ui.label(self.i18n.tr_args("analysis-done", &[("words", n.into())]));
+                if let Some(c) = self.analysis.cuttings.get(&id) {
+                    let n = c.candidates.len() as i64;
+                    ui.label(self.i18n.tr_args("analysis-cut-done", &[("n", n.into())]));
+                    if ui.small_button("✂").on_hover_text(self.i18n.tr("analysis-recut")).clicked() {
+                        action = Some(RowAction::Recut(id));
+                    }
+                } else {
+                    if let Some(key) = self.analysis.cut_errors.get(&id) {
+                        if *key == "analysis-cancelled" {
+                            ui.weak(self.i18n.tr("analysis-cut-cancelled"));
+                        } else {
+                            ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr(key));
+                        }
+                    }
+                    if ui.small_button("▶").on_hover_text(self.i18n.tr("analysis-cut-start")).clicked() {
+                        action = Some(RowAction::Analyze(id));
+                    }
+                }
                 if ui.small_button("⟳").on_hover_text(self.i18n.tr("analysis-redo")).clicked() {
                     action = Some(RowAction::Redo(id));
                 }
@@ -285,11 +402,8 @@ impl App {
     }
 
     fn stage_text(&self, r: &Running) -> String {
-        let name = self.i18n.tr(stage_key(r.stage));
-        match r.stage {
-            Stage::Model | Stage::Vad => name,
-            Stage::Audio | Stage::Speech => format!("{name} {:.0}%", r.fraction * 100.0),
-        }
+        let name = self.i18n.tr(step_key(r.step));
+        if has_progress(r.step) { format!("{name} {:.0}%", r.fraction * 100.0) } else { name }
     }
 
     // --- Модели ---
@@ -340,8 +454,11 @@ impl App {
 
     /// Модели появились — повторить ролики, которые на них споткнулись.
     fn retry_without_models(&mut self) {
-        let ids: Vec<SourceId> =
-            self.analysis.errors.iter().filter(|(_, k)| **k == "analysis-err-no-model").map(|(id, _)| *id).collect();
+        let a = &self.analysis;
+        let ids: Vec<SourceId> = (a.errors.iter().filter(|(_, k)| **k == "analysis-err-no-model"))
+            .chain(a.cut_errors.iter().filter(|(_, k)| **k == "analysis-err-no-llm"))
+            .map(|(id, _)| *id)
+            .collect();
         for id in ids {
             self.enqueue_analysis(id);
         }
@@ -400,7 +517,7 @@ impl App {
 
     /// Плашка на «Импорте», пока нет моделей: без них работает только ручная нарезка.
     pub(crate) fn models_banner(&mut self, ui: &mut egui::Ui) {
-        if self.models_ready() {
+        if self.models_ready() && self.cut_models_ready() {
             return;
         }
         egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -428,12 +545,15 @@ impl App {
                 }
             });
             ui.end_row();
-            ui.label(self.i18n.tr("models-vad"));
-            ui.label(mark(SILERO_VAD.present(&dir)));
-            ui.monospace(SILERO_VAD.path(&dir).display().to_string());
-            ui.end_row();
+            for (key, spec) in [("models-vad", SILERO_VAD), ("models-embed", QWEN3_EMBED), ("models-llm", QWEN35_9B)] {
+                ui.label(self.i18n.tr(key));
+                ui.label(mark(spec.present(&dir)));
+                ui.monospace(spec.path(&dir).display().to_string());
+                ui.end_row();
+            }
         });
         self.download_ui(ui);
+        ui.weak(self.i18n.tr_args("settings-prompts-hint", &[("dir", self.paths.prompts_dir().display().to_string().into())]));
 
         ui.add_space(8.0);
         ui.label(self.i18n.tr("settings-terms"));
@@ -452,12 +572,34 @@ impl App {
     }
 }
 
-fn stage_key(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Audio => "analysis-stage-audio",
-        Stage::Model => "analysis-stage-model",
-        Stage::Vad => "analysis-stage-vad",
-        Stage::Speech => "analysis-stage-speech",
+fn step_key(step: Step) -> &'static str {
+    match step {
+        Step::Transcribe(Stage::Audio) => "analysis-stage-audio",
+        Step::Transcribe(Stage::Model) => "analysis-stage-model",
+        Step::Transcribe(Stage::Vad) => "analysis-stage-vad",
+        Step::Transcribe(Stage::Speech) => "analysis-stage-speech",
+        Step::Cut(CutStage::Structure) => "analysis-stage-structure",
+        Step::Cut(CutStage::Model) => "analysis-stage-llm-model",
+        Step::Cut(CutStage::Llm) => "analysis-stage-cut",
+    }
+}
+
+/// У стадии есть доля выполненного (иначе — только анимация).
+fn has_progress(step: Step) -> bool {
+    matches!(step, Step::Transcribe(Stage::Audio | Stage::Speech) | Step::Cut(CutStage::Llm))
+}
+
+fn log_error(name: &str, e: &AnalysisError) {
+    if !matches!(e, AnalysisError::Cancelled) {
+        log::warn!("анализ {name}: {e}");
+    }
+}
+
+/// Ошибка нарезки → ключ i18n: нет моделей нарезки — своё сообщение.
+fn cut_error_key(e: &AnalysisError) -> &'static str {
+    match e {
+        AnalysisError::ModelMissing(_) => "analysis-err-no-llm",
+        e => analysis_error_key(e),
     }
 }
 
@@ -471,6 +613,8 @@ fn analysis_error_key(e: &AnalysisError) -> &'static str {
         AnalysisError::Whisper(_) => "analysis-err-whisper",
         AnalysisError::Download(_) => "models-err-network",
         AnalysisError::Checksum(_) => "models-err-checksum",
+        AnalysisError::Prompt(_) => "analysis-err-prompt",
+        AnalysisError::Llama(_) => "analysis-err-llm",
         AnalysisError::Cancelled => "analysis-cancelled",
         AnalysisError::Io(_) | AnalysisError::BadPath => "analysis-err-io",
     }

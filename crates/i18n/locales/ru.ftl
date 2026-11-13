@@ -149,10 +149,24 @@ analysis-err-model-load = Модель распознавания не загр�
 analysis-err-whisper = Ошибка распознавания
 analysis-err-ffmpeg = ffmpeg не смог извлечь звук
 analysis-err-io = Ошибка чтения или записи файла
+analysis-err-no-llm = Нет моделей нарезки
+analysis-err-prompt = Ошибка в файлах промптов нарезки
+analysis-err-llm = Ошибка LLM при нарезке
+analysis-stage-structure = Структура текста
+analysis-stage-llm-model = Загрузка LLM
+analysis-stage-cut = Нарезка
+analysis-cut-start = Нарезать по смыслу
+analysis-cut-cancelled = Нарезка отменена
+analysis-recut = Нарезать заново (например, после правки промптов)
+analysis-cut-done = { $n ->
+    [one] { $n } кандидат
+    [few] { $n } кандидата
+   *[many] { $n } кандидатов
+}
 
 ## Модели
-settings-analysis = Распознавание речи
-models-needed = Для автоматической нарезки нужны модели распознавания речи. Без них доступна только ручная нарезка.
+settings-analysis = Распознавание и нарезка
+models-needed = Для автоматической нарезки нужны модели: распознавание речи, структура текста и LLM. Без них доступна только ручная нарезка.
 models-download = Скачать модели ({ $size } ГБ)
 models-download-cancel = Остановить загрузку
 models-downloading = { $file }: { $done } из { $total } ГБ
@@ -163,6 +177,9 @@ models-reset = Стандартная
 models-reset-hint = Вернуть стандартную модель large-v3-turbo
 models-whisper = Модель whisper
 models-vad = Детектор речи (VAD)
+models-embed = Эмбеддинги (структура текста)
+models-llm = LLM нарезки
+settings-prompts-hint = Свои промпты нарезки: файлы pass1-boundaries.md, pass1.schema.json, pass2-score.md, pass2.schema.json в { $dir } заменяют встроенные.
 models-err-network = Не удалось скачать модель — проверьте сеть и повторите (загрузка продолжится с места обрыва)
 models-err-checksum = Скачанный файл повреждён — повторите загрузку
 settings-terms = Словарь терминов

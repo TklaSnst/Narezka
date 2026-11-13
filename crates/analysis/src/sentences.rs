@@ -124,14 +124,17 @@ impl Pause {
 
 /// Паузы между словами не короче `min` секунд, по порядку.
 pub fn pauses(t: &Transcript, min: f64) -> Vec<Pause> {
-    t.words
-        .windows(2)
-        .filter(|p| p[1].start - p[0].end >= min)
-        .map(|p| {
-            let gap = Span { start: p[0].end, end: p[1].start };
-            Pause { gap, silence: longest_silence(gap, &t.speech) }
-        })
+    (0..t.words.len().saturating_sub(1))
+        .filter(|&i| t.words[i + 1].start - t.words[i].end >= min)
+        .filter_map(|i| pause_after_word(t, i))
         .collect()
+}
+
+/// Промежуток между словом `i` и следующим (может быть нулевым); `None` у последнего слова.
+pub fn pause_after_word(t: &Transcript, i: usize) -> Option<Pause> {
+    let next = t.words.get(i + 1)?;
+    let gap = Span { start: t.words[i].end, end: next.start.max(t.words[i].end) };
+    Some(Pause { gap, silence: longest_silence(gap, &t.speech) })
 }
 
 /// Самый длинный кусок `gap`, не покрытый участками речи (`speech` отсортированы).

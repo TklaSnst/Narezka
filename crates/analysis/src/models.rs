@@ -44,6 +44,14 @@ pub const QWEN3_EMBED: ModelSpec = ModelSpec {
     size: 639_150_592,
 };
 
+/// LLM нарезки (DECISIONS, шаг 0.3): Qwen3.5-9B UD-Q4_K_XL от Unsloth, ~5.7 ГБ VRAM с контекстом 12288.
+pub const QWEN35_9B: ModelSpec = ModelSpec {
+    file: "Qwen3.5-9B-UD-Q4_K_XL.gguf",
+    url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+    sha256: "6f5d30666c2d8ae16a306e616d95341dcf3cc46810df84d7e6f5a7d1e4c1b293",
+    size: 5_966_095_584,
+};
+
 impl ModelSpec {
     pub fn path(&self, dir: &Path) -> PathBuf {
         dir.join(self.file)

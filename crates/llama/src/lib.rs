@@ -2,6 +2,7 @@
 //!
 //! Процесс живёт, пока жив [`Server`]; при удалении он завершается и VRAM освобождается сразу —
 //! так whisper и LLM гарантированно не занимают видеопамять одновременно (DECISIONS).
+//! Запросы: эмбеддинги (`/v1/embeddings`) и чат с ответом по JSON-схеме (`/v1/chat/completions`).
 //! Переменные ggml (`GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM`) сервер наследует от приложения.
 
 use std::collections::VecDeque;
@@ -25,6 +26,8 @@ pub enum LlamaError {
     Timeout(u64),
     #[error("запрос к llama-server: {0}")]
     Http(String),
+    #[error("ответ модели не по схеме: {0}")]
+    BadAnswer(String),
     #[error("llama-server вернул {got} векторов вместо {want}")]
     Count { want: usize, got: usize },
     #[error("отменено")]
@@ -66,9 +69,20 @@ impl ServerOptions {
     /// Эмбеддинги предложений: предложение (≤30 с, ~250 токенов) целиком влезает в один ubatch;
     /// контекст 2048 — KV 224 МБ вместо 896 при 8192, скорость та же (~22 мс на предложение, шаг 2.2).
     pub fn embedding(model: &Path) -> Self {
-        Self { binary: None, model: model.to_owned(), ctx: 2048, embedding: true, args: vec![] }
+        let args = ["-b", "2048", "-ub", "2048"].map(String::from).to_vec();
+        Self { binary: None, model: model.to_owned(), ctx: 2048, embedding: true, args }
+    }
+
+    /// LLM для нарезки (шаг 0.3): все слои на GPU, flash attention, шаблон чата из GGUF, рассуждения выключены —
+    /// с грамматикой они не завершаются. Контекст 12288 — окно 6 мин (~3–4 тыс. токенов) с промптом и ответом с запасом.
+    pub fn chat(model: &Path) -> Self {
+        let args = ["-ngl", "99", "-fa", "on", "--jinja", "--reasoning-budget", "0"].map(String::from).to_vec();
+        Self { binary: None, model: model.to_owned(), ctx: 12288, embedding: false, args }
     }
 }
+
+/// Ответ модели упёрся в `max_tokens` — JSON недописан.
+const FINISH_LENGTH: &str = "length";
 
 pub struct Server {
     child: Child,
@@ -83,7 +97,7 @@ impl Server {
         let port = free_port()?;
         let mut cmd = Command::new(&bin);
         cmd.arg("-m").arg(&opts.model)
-            .args(["-c", &opts.ctx.to_string(), "-b", "2048", "-ub", "2048"])
+            .args(["-c", &opts.ctx.to_string()])
             .args(["--host", "127.0.0.1", "--port", &port.to_string(), "-np", "1"])
             .args(&opts.args)
             .stdin(Stdio::null())
@@ -168,6 +182,88 @@ impl Server {
         }
         Ok(out)
     }
+
+    /// Ответ чат-модели строго по JSON-схеме (llama.cpp строит из неё грамматику). Схема гарантирует формат,
+    /// но не смысл — номера и диапазоны проверяет вызывающий. `cancel` проверяется до запроса: сам запрос
+    /// (секунды) не прерывается.
+    pub fn chat_json<T: serde::de::DeserializeOwned>(
+        &self,
+        req: &ChatRequest,
+        cancel: &AtomicBool,
+    ) -> Result<T, LlamaError> {
+        #[derive(Deserialize)]
+        struct Message {
+            content: String,
+        }
+        #[derive(Deserialize)]
+        struct Choice {
+            message: Message,
+            finish_reason: Option<String>,
+        }
+        #[derive(Deserialize, Default)]
+        struct Timings {
+            prompt_n: u32,
+            prompt_ms: f64,
+            predicted_n: u32,
+            predicted_ms: f64,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            choices: Vec<Choice>,
+            #[serde(default)]
+            timings: Timings,
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Err(LlamaError::Cancelled);
+        }
+        let body = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": req.system },
+                { "role": "user", "content": req.user },
+            ],
+            "temperature": req.temperature,
+            "seed": 1,
+            "max_tokens": req.max_tokens,
+            "response_format": { "type": "json_schema", "json_schema": { "name": "out", "schema": req.schema } },
+            "chat_template_kwargs": { "enable_thinking": false },
+        });
+        let mut resp = self
+            .agent
+            .post(format!("{}/v1/chat/completions", self.base))
+            .send_json(body)
+            .map_err(|e| LlamaError::Http(e.to_string()))?;
+        if resp.status() != 200 {
+            let body = resp.body_mut().read_to_string().unwrap_or_default();
+            return Err(LlamaError::Http(format!("{}: {body}", resp.status())));
+        }
+        let resp = resp.body_mut().read_json::<Resp>().map_err(|e| LlamaError::Http(e.to_string()))?;
+        let t = &resp.timings;
+        log::debug!(
+            "чат: промпт {} ток. за {:.1} с, ответ {} ток. за {:.1} с",
+            t.prompt_n,
+            t.prompt_ms / 1e3,
+            t.predicted_n,
+            t.predicted_ms / 1e3
+        );
+        let choice = resp.choices.into_iter().next().ok_or_else(|| LlamaError::BadAnswer("нет choices".into()))?;
+        if choice.finish_reason.as_deref() == Some(FINISH_LENGTH) {
+            return Err(LlamaError::BadAnswer(format!("ответ обрезан на {} токенах", req.max_tokens)));
+        }
+        serde_json::from_str(&choice.message.content).map_err(|e| {
+            let head: String = choice.message.content.chars().take(200).collect();
+            LlamaError::BadAnswer(format!("{e}: {head}"))
+        })
+    }
+}
+
+/// Запрос к чат-модели с ответом по JSON-схеме.
+#[derive(Debug, Clone)]
+pub struct ChatRequest {
+    pub system: String,
+    pub user: String,
+    pub schema: serde_json::Value,
+    pub temperature: f32,
+    pub max_tokens: u32,
 }
 
 impl Drop for Server {

@@ -36,6 +36,10 @@ impl Paths {
     pub fn settings_file(&self) -> PathBuf {
         self.config.join("settings.toml")
     }
+    /// Свои промпты нарезки — перекрывают встроенные одноимённые файлы.
+    pub fn prompts_dir(&self) -> PathBuf {
+        self.config.join("prompts")
+    }
     pub fn templates_dir(&self) -> PathBuf {
         self.data.join("templates")
     }

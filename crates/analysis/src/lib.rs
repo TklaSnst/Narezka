@@ -1,9 +1,10 @@
 //! Анализ исходника: звук → whisper (Vulkan + VAD) → транскрипт со словами и таймкодами.
 //!
 //! Структура текста: предложения и паузы ([`sentences`]), границы тем по эмбеддингам ([`topics`]).
-//! Дальше по этапу 2: LLM-нарезка (ARCHITECTURE §4).
+//! LLM-нарезка на кандидаты в шортсы — [`cutting`] (ARCHITECTURE §4).
 
 pub mod audio;
+pub mod cutting;
 pub mod models;
 pub mod sentences;
 pub mod topics;
@@ -13,8 +14,9 @@ pub mod whisper;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-pub use models::{ModelSpec, QWEN3_EMBED, SILERO_VAD, WHISPER_TURBO};
-pub use sentences::{Pause, Sentence, SplitOptions, pauses, sentences};
+pub use cutting::{Block, BlockKind, Candidate, CutJob, CutOptions, CutStage, Cutting, Flag, Found, Prompts};
+pub use models::{ModelSpec, QWEN35_9B, QWEN3_EMBED, SILERO_VAD, WHISPER_TURBO};
+pub use sentences::{Pause, Sentence, SplitOptions, pause_after_word, pauses, sentences};
 pub use topics::{TilingOptions, TopicBoundary, embed_sentences, topic_boundaries};
 pub use transcript::{Segment, Span, Transcript, Word};
 pub use whisper::{Whisper, WhisperOptions};
@@ -39,10 +41,23 @@ pub enum AnalysisError {
     Download(String),
     #[error("{0}: размер или SHA-256 не совпали")]
     Checksum(&'static str),
+    #[error("промпт: {0}")]
+    Prompt(String),
+    #[error(transparent)]
+    Llama(sc_llama::LlamaError),
     #[error("отменено")]
     Cancelled,
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+impl From<sc_llama::LlamaError> for AnalysisError {
+    fn from(e: sc_llama::LlamaError) -> Self {
+        match e {
+            sc_llama::LlamaError::Cancelled => AnalysisError::Cancelled,
+            e => AnalysisError::Llama(e),
+        }
+    }
 }
 
 /// Выставляет переменные ggml. Вызывать в начале `main`, до потоков и до первой загрузки модели.
@@ -125,6 +140,8 @@ impl TranscribeJob {
         if let Err(e) = transcript.save_cached(&self.cache_dir, &self.hash) {
             log::warn!("кэш транскрипта не записан: {e}");
         }
+        // Нарезка по прежнему транскрипту больше не годится.
+        let _ = std::fs::remove_file(Cutting::cache_file(&self.cache_dir, &self.hash));
         Ok(transcript)
     }
 }

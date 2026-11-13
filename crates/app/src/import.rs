@@ -63,6 +63,8 @@ impl App {
                     s.hash = Some(hash);
                     s.status = SourceStatus::Ready;
                 }
+                // Анализ — сразу по очереди; транскрипт из кэша приходит без распознавания.
+                self.enqueue_analysis(id);
             }
             Err(key) => {
                 if let Some(s) = self.batch.source_mut(id) {
@@ -87,6 +89,7 @@ impl App {
             ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr("caps-no-ffmpeg"));
         }
         ui.add_space(8.0);
+        self.models_banner(ui);
 
         if self.batch.sources.is_empty() {
             ui.label(self.i18n.tr("import-empty"));
@@ -94,6 +97,7 @@ impl App {
         }
 
         let mut remove = None;
+        let mut action = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("sources").striped(true).num_columns(7).spacing([16.0, 6.0]).show(ui, |ui| {
                 for key in ["import-col-file", "import-col-duration", "import-col-size", "import-col-fps", "import-col-audio", "import-col-status"] {
@@ -116,7 +120,13 @@ impl App {
                             }
                         }
                     }
-                    self.status_cell(ui, &s.status);
+                    if matches!(s.status, SourceStatus::Ready | SourceStatus::Analyzing | SourceStatus::Analyzed) {
+                        if let Some(a) = self.analysis_cell(ui, s) {
+                            action = Some(a);
+                        }
+                    } else {
+                        self.status_cell(ui, &s.status);
+                    }
                     if ui.small_button("✖").on_hover_text(self.i18n.tr("import-remove")).clicked() {
                         remove = Some(s.id);
                     }
@@ -124,7 +134,11 @@ impl App {
                 }
             });
         });
+        if let Some(a) = action {
+            self.apply_row_action(a);
+        }
         if let Some(id) = remove {
+            self.forget_analysis(id);
             let _ = self.batch.remove_source(id);
         }
     }

@@ -1,0 +1,11 @@
+[package]
+name = "sc-whisper-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+links = "whisper"
+description = "FFI к whisper.cpp (Vulkan), собранному из third_party/whisper.cpp"
+
+[build-dependencies]
+cmake = "0.1"
+bindgen = "0.72"

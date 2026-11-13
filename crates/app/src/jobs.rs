@@ -8,6 +8,7 @@ use eframe::egui;
 use sc_core::{MediaInfo, SourceId};
 use sc_media::{Capabilities, MediaError};
 
+use crate::analysis::{AnalysisEvent, DownloadEvent};
 use crate::export::RenderEvent;
 
 pub enum Msg {
@@ -19,9 +20,13 @@ pub enum Msg {
     /// Папка вывода из диалога; `None` — диалог закрыт без выбора.
     PickedDir(Option<PathBuf>),
     Render(RenderEvent),
+    Analysis(AnalysisEvent),
+    Download(DownloadEvent),
+    /// Файл модели whisper из диалога; `None` — диалог закрыт без выбора.
+    PickedModel(Option<PathBuf>),
 }
 
-/// Отправитель для долгих задач, которые шлют несколько сообщений (рендер).
+/// Отправитель для долгих задач, которые шлют несколько сообщений (рендер, анализ, загрузка).
 pub struct Notifier {
     tx: Sender<Msg>,
     ctx: egui::Context,

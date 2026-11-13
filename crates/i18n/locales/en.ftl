@@ -117,3 +117,47 @@ export-status-cancelled = { $n ->
     [one] Render cancelled, { $n } file finished
    *[other] Render cancelled, { $n } files finished
 }
+
+## Analysis (speech recognition)
+analysis-queued = Queued for analysis
+analysis-start = Recognize speech
+analysis-cancel = Cancel analysis
+analysis-stop = Stop
+analysis-cancelled = Analysis cancelled
+analysis-redo = Recognize again (e.g. after editing the term list)
+analysis-done = { $words ->
+    [one] Recognized: { $words } word
+   *[other] Recognized: { $words } words
+}
+analysis-stage-audio = Audio
+analysis-stage-model = Loading model
+analysis-stage-vad = Detecting speech
+analysis-stage-speech = Speech
+analysis-status-running = Analyzing “{ $name }”: { $stage }{ $queued ->
+    [0] {""}
+   *[other] , { $queued } more queued
+}
+analysis-err-no-audio = No audio — manual cutting only
+analysis-err-no-model = Speech recognition model missing
+analysis-err-model-load = Failed to load the speech recognition model
+analysis-err-whisper = Speech recognition failed
+analysis-err-ffmpeg = ffmpeg could not extract audio
+analysis-err-io = File read or write error
+
+## Models
+settings-analysis = Speech recognition
+models-needed = Automatic cutting needs speech recognition models. Without them only manual cutting is available.
+models-download = Download models ({ $size } GB)
+models-download-cancel = Stop download
+models-downloading = { $file }: { $done } of { $total } GB
+models-pick = Choose model file…
+models-pick-dialog = Whisper model (ggml)
+models-pick-filter = Whisper model
+models-reset = Default
+models-reset-hint = Back to the default large-v3-turbo model
+models-whisper = Whisper model
+models-vad = Voice activity detector (VAD)
+models-err-network = Model download failed — check the network and retry (it resumes where it stopped)
+models-err-checksum = Downloaded file is corrupted — retry the download
+settings-terms = Term list
+settings-terms-hint = One per line: names, games, services — helps recognition spell them right.

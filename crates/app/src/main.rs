@@ -1,5 +1,6 @@
 //! ShortsCutter — точка входа: окно, вкладки, фоновые задачи.
 
+mod analysis;
 mod cut;
 mod export;
 mod fmt;
@@ -13,6 +14,7 @@ use sc_core::{Batch, Language, Paths, Settings};
 use sc_i18n::I18n;
 use sc_media::{Capabilities, EncoderKind};
 
+use analysis::AnalysisState;
 use cut::CutState;
 use export::ExportState;
 use jobs::{Jobs, Msg};
@@ -61,6 +63,7 @@ struct App {
     player_error: Option<String>,
     cut: CutState,
     export: ExportState,
+    analysis: AnalysisState,
 }
 
 impl App {
@@ -77,6 +80,7 @@ impl App {
         jobs.spawn(|| Msg::Caps(Capabilities::detect()));
         Self {
             i18n: I18n::new(settings.language),
+            analysis: AnalysisState::new(&settings),
             paths,
             settings,
             batch,
@@ -105,8 +109,12 @@ impl App {
                 Msg::Probed { id, result } => self.on_probed(id, result),
                 Msg::PickedDir(dir) => self.on_picked_dir(dir),
                 Msg::Render(ev) => self.on_render(ev),
+                Msg::Analysis(ev) => self.on_analysis(ev),
+                Msg::Download(ev) => self.on_download(ev),
+                Msg::PickedModel(file) => self.on_picked_model(file),
             }
         }
+        self.pump_analysis();
     }
 
     /// Файлы, брошенные в окно; пока их тащат над окном — подсказка поверх всего.
@@ -206,6 +214,9 @@ impl App {
         }
         ui.add_space(12.0);
         ui.separator();
+        self.analysis_settings_ui(ui);
+        ui.add_space(12.0);
+        ui.separator();
         self.caps_ui(ui);
     }
 }
@@ -250,6 +261,9 @@ impl eframe::App for App {
                         "export-status-running",
                         &[("n", (n as i64).into()), ("total", (total as i64).into()), ("pct", pct.into())],
                     ));
+                } else if let Some(s) = self.analysis_status() {
+                    ui.separator();
+                    ui.label(s);
                 } else if let Some(s) = &self.status {
                     ui.separator();
                     ui.label(s);
@@ -279,6 +293,8 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result {
+    // До любых потоков и до инициализации ggml (whisper).
+    sc_analysis::prepare_ggml_env();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     sc_mpv::set_c_numeric_locale();
 

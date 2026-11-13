@@ -39,6 +39,25 @@ pub struct Settings {
     pub output: OutputSettings,
     /// Папка, из которой в прошлый раз добавляли видео.
     pub last_import_dir: Option<PathBuf>,
+    pub analysis: AnalysisSettings,
+}
+
+/// Распознавание речи и нарезка.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnalysisSettings {
+    /// Свой файл модели whisper; `None` — стандартная large-v3-turbo в каталоге моделей.
+    pub whisper_model: Option<PathBuf>,
+    /// Язык речи для whisper (`ru`, `en`… или `auto`).
+    pub language: String,
+    /// Словарь терминов (имена, названия игр и сервисов) — подсказка whisper.
+    pub terms: Vec<String>,
+}
+
+impl Default for AnalysisSettings {
+    fn default() -> Self {
+        Self { whisper_model: None, language: "ru".into(), terms: Vec::new() }
+    }
 }
 
 impl Default for Settings {
@@ -49,6 +68,7 @@ impl Default for Settings {
             allow_overlaps: false,
             output: OutputSettings { conflict_policy: ConflictPolicy::Continue, ..Default::default() },
             last_import_dir: None,
+            analysis: AnalysisSettings::default(),
         }
     }
 }
@@ -143,6 +163,18 @@ mod tests {
         assert_eq!(s.render_jobs, 8);
         assert_eq!(s.output.base_name, "hrenn");
         assert_eq!(s.output.video_bitrate_kbps, 12_000);
+        assert_eq!(s.analysis.language, "ru");
+    }
+
+    #[test]
+    fn analysis_terms_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        std::fs::write(&path, "[analysis]\nterms = [\"Lumen VPN\", \"Hyprland\"]\n").unwrap();
+        let s = Settings::load(&path).unwrap();
+        assert_eq!(s.analysis.terms, ["Lumen VPN", "Hyprland"]);
+        assert_eq!(s.analysis.language, "ru");
+        assert_eq!(s.analysis.whisper_model, None);
     }
 
     #[test]

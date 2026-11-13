@@ -6,3 +6,14 @@ license.workspace = true
 
 [dependencies]
 sc-core.workspace = true
+sc-whisper-sys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+ureq = "3"
+sha2 = "0.11"
+
+[dev-dependencies]
+tempfile.workspace = true
+env_logger.workspace = true

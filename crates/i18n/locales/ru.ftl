@@ -122,3 +122,48 @@ export-status-cancelled = { $n ->
     [few] Рендер отменён, готово { $n } файла
    *[many] Рендер отменён, готово { $n } файлов
 }
+
+## Анализ (распознавание речи)
+analysis-queued = В очереди на анализ
+analysis-start = Распознать речь
+analysis-cancel = Отменить анализ
+analysis-stop = Стоп
+analysis-cancelled = Анализ отменён
+analysis-redo = Распознать заново (например, после правки словаря терминов)
+analysis-done = { $words ->
+    [one] Распознано: { $words } слово
+    [few] Распознано: { $words } слова
+   *[many] Распознано: { $words } слов
+}
+analysis-stage-audio = Звук
+analysis-stage-model = Загрузка модели
+analysis-stage-vad = Поиск речи
+analysis-stage-speech = Речь
+analysis-status-running = Анализ «{ $name }»: { $stage }{ $queued ->
+    [0] {""}
+   *[other] , в очереди ещё { $queued }
+}
+analysis-err-no-audio = Нет звука — только ручная нарезка
+analysis-err-no-model = Нет модели распознавания
+analysis-err-model-load = Модель распознавания не загрузилась
+analysis-err-whisper = Ошибка распознавания
+analysis-err-ffmpeg = ffmpeg не смог извлечь звук
+analysis-err-io = Ошибка чтения или записи файла
+
+## Модели
+settings-analysis = Распознавание речи
+models-needed = Для автоматической нарезки нужны модели распознавания речи. Без них доступна только ручная нарезка.
+models-download = Скачать модели ({ $size } ГБ)
+models-download-cancel = Остановить загрузку
+models-downloading = { $file }: { $done } из { $total } ГБ
+models-pick = Указать файл модели…
+models-pick-dialog = Модель whisper (ggml)
+models-pick-filter = Модель whisper
+models-reset = Стандартная
+models-reset-hint = Вернуть стандартную модель large-v3-turbo
+models-whisper = Модель whisper
+models-vad = Детектор речи (VAD)
+models-err-network = Не удалось скачать модель — проверьте сеть и повторите (загрузка продолжится с места обрыва)
+models-err-checksum = Скачанный файл повреждён — повторите загрузку
+settings-terms = Словарь терминов
+settings-terms-hint = По одному на строку: имена, названия игр и сервисов — так распознавание пишет их правильно.

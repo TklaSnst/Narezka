@@ -14,5 +14,5 @@ pub use batch::{
 };
 pub use geometry::{Color, Rect};
 pub use paths::Paths;
-pub use settings::{Language, Settings};
+pub use settings::{AnalysisSettings, Language, Settings};
 pub use template::{Background, Canvas, Layer, Template, TemplateError, background_crop, main_video_crop};

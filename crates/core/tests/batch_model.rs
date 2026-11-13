@@ -80,3 +80,70 @@ fn batch_serde_roundtrip() {
     let json = serde_json::to_string(&b).unwrap();
     assert_eq!(serde_json::from_str::<Batch>(&json).unwrap(), b);
 }
+
+fn candidate(src: SourceId, start: f64, end: f64, score: f32) -> Short {
+    Short { status: ShortStatus::Candidate, score: Some(score), auto: true, ..Short::manual(src, start, end) }
+}
+
+#[test]
+fn candidates_accept_and_overlap_option() {
+    let (mut b, src) = batch_with_source(100.0);
+    let a = b.add_short(Short::manual(src, 10.0, 40.0)).unwrap();
+    // Кандидаты могут перекрываться с чем угодно…
+    let c = b.add_short(candidate(src, 30.0, 50.0, 7.0)).unwrap();
+    // …но принять пересекающийся с принятым нельзя.
+    assert_eq!(b.set_status(c, ShortStatus::Accepted), Err(BatchError::Overlap(a)));
+    assert_eq!(b.short(c).unwrap().status, ShortStatus::Candidate);
+    b.allow_overlap = true;
+    b.set_status(c, ShortStatus::Accepted).unwrap();
+    b.allow_overlap = false;
+    b.set_status(c, ShortStatus::Rejected).unwrap();
+}
+
+#[test]
+fn split_and_merge() {
+    let (mut b, src) = batch_with_source(100.0);
+    let a = b.add_short(candidate(src, 10.0, 40.0, 6.0)).unwrap();
+    assert_eq!(b.split_short(a, 10.2), Err(BatchError::BadSplit));
+    assert_eq!(b.split_short(a, 50.0), Err(BatchError::BadSplit));
+    let second = b.split_short(a, 25.0).unwrap();
+    assert_eq!((b.short(a).unwrap().end, b.short(second).unwrap().start), (25.0, 25.0));
+    assert_eq!(b.short(second).unwrap().status, ShortStatus::Candidate);
+
+    let c = b.add_short(Short { title: "лучший".into(), ..candidate(src, 50.0, 60.0, 9.0) }).unwrap();
+    b.set_status(c, ShortStatus::Accepted).unwrap();
+    // Отклонённый между ними пропускается.
+    b.set_status(second, ShortStatus::Rejected).unwrap();
+    assert_eq!(b.next_short(a).unwrap().id, c);
+    b.merge_with_next(a).unwrap();
+    let m = b.short(a).unwrap();
+    assert_eq!((m.start, m.end, m.status, m.title.as_str()), (10.0, 60.0, ShortStatus::Accepted, "лучший"));
+    assert!(b.short(c).is_none());
+    assert_eq!(b.merge_with_next(a), Err(BatchError::NothingToMerge));
+
+    // Объединение не пройдёт через принятый шортс — ничего не теряется.
+    let d = b.add_short(Short::manual(src, 70.0, 80.0)).unwrap();
+    let e = b.add_short(candidate(src, 85.0, 90.0, 5.0)).unwrap();
+    let mut wide = b.short(e).unwrap().clone();
+    wide.start = 65.0;
+    b.update_short(wide).unwrap();
+    // e начинается раньше d — следующий для a теперь e, и принятый итог перекрыл бы d.
+    assert_eq!(b.merge_with_next(a), Err(BatchError::Overlap(d)));
+    assert!(b.short(e).is_some());
+}
+
+#[test]
+fn replace_candidates_keeps_accepted() {
+    let (mut b, src) = batch_with_source(100.0);
+    let old = b.add_short(candidate(src, 0.0, 20.0, 5.0)).unwrap();
+    let kept = b.add_short(candidate(src, 30.0, 50.0, 8.0)).unwrap();
+    b.set_status(kept, ShortStatus::Accepted).unwrap();
+    let manual = b.add_short(Short { status: ShortStatus::Rejected, ..Short::manual(src, 60.0, 70.0) }).unwrap();
+
+    b.replace_candidates(src, vec![candidate(src, 0.0, 25.0, 6.0), candidate(src, 31.0, 49.0, 8.0), candidate(src, 45.0, 75.0, 4.0)]);
+    assert!(b.short(old).is_none());
+    assert!(b.short(kept).is_some() && b.short(manual).is_some(), "принятые и ручные остаются");
+    let starts: Vec<f64> = b.shorts_of(src).iter().map(|s| s.start).collect();
+    // 31–49 почти целиком внутри принятого — не добавлен; 45–75 занят принятым лишь на 5 с из 30.
+    assert_eq!(starts, [0.0, 30.0, 45.0, 60.0]);
+}

@@ -2672,6 +2672,7 @@ name = "sc-llama"
 version = "0.1.0"
 dependencies = [
  "cmake",
+ "libc",
  "log",
  "serde",
  "serde_json",

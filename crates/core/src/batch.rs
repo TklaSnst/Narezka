@@ -66,6 +66,13 @@ pub enum SourceStatus {
     Failed(String),
 }
 
+/// Отрезок исходника, секунды.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TimeRange {
+    pub start: f64,
+    pub end: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Source {
     pub id: SourceId,
@@ -77,6 +84,9 @@ pub struct Source {
     pub hash: Option<String>,
     #[serde(default)]
     pub status: SourceStatus,
+    /// Зоны пропуска, размеченные вручную: нарезка их не трогает.
+    #[serde(default)]
+    pub skip: Vec<TimeRange>,
 }
 
 impl Source {
@@ -87,6 +97,7 @@ impl Source {
             info: None,
             hash: None,
             status: SourceStatus::New,
+            skip: Vec::new(),
         }
     }
 }
@@ -99,6 +110,20 @@ pub enum ShortStatus {
     #[default]
     Accepted,
     Rejected,
+}
+
+/// Пометка анализа: на что посмотреть, прежде чем принять кандидата.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShortFlag {
+    /// Граница найдена только одним способом.
+    Unsure,
+    /// Без остального видео может быть непонятно.
+    NotStandalone,
+    /// Длиннее цели (60 с).
+    TooLong,
+    /// Оценки нет — модель ответила не по смыслу.
+    NoScore,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -116,6 +141,13 @@ pub struct Short {
     pub reason: String,
     #[serde(default)]
     pub status: ShortStatus,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default)]
+    pub flags: Vec<ShortFlag>,
+    /// Предложен анализом (повторная нарезка заменяет такие шортсы, кроме принятых).
+    #[serde(default)]
+    pub auto: bool,
 }
 
 impl Short {
@@ -130,6 +162,9 @@ impl Short {
             score: None,
             reason: String::new(),
             status: ShortStatus::Accepted,
+            keywords: Vec::new(),
+            flags: Vec::new(),
+            auto: false,
         }
     }
 
@@ -246,6 +281,10 @@ pub enum BatchError {
     OutOfSource { duration: f64 },
     #[error("шортс пересекается с уже существующим")]
     Overlap(ShortId),
+    #[error("точка разреза вне шортса или слишком близко к краю")]
+    BadSplit,
+    #[error("нет соседнего шортса для объединения")]
+    NothingToMerge,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -257,7 +296,13 @@ pub struct Batch {
     pub template: Template,
     #[serde(default)]
     pub output: OutputSettings,
+    /// Разрешить принятым шортсам перекрываться (SPEC §2: по умолчанию нельзя).
+    #[serde(default)]
+    pub allow_overlap: bool,
 }
+
+/// Кусок шортса после разделения не короче, с.
+pub const MIN_SPLIT: f64 = 0.5;
 
 impl Default for Batch {
     fn default() -> Self {
@@ -266,6 +311,7 @@ impl Default for Batch {
             shorts: Vec::new(),
             template: Template::minimal(),
             output: OutputSettings::default(),
+            allow_overlap: false,
         }
     }
 }
@@ -308,7 +354,8 @@ impl Batch {
     }
 
     /// Проверяет границы шортса относительно исходника и остальных шортсов
-    /// (кроме него самого — для редактирования). Перекрытия запрещены (DECISIONS).
+    /// (кроме него самого — для редактирования). Принятые не перекрываются друг с другом, если
+    /// не включено `allow_overlap`; кандидаты и отклонённые могут лежать где угодно (DECISIONS).
     pub fn check_short(&self, short: &Short) -> Result<(), BatchError> {
         let source = self.source(short.source_id).ok_or(BatchError::UnknownSource)?;
         let (start, end) = (short.start, short.end);
@@ -320,10 +367,12 @@ impl Batch {
         {
             return Err(BatchError::OutOfSource { duration: info.duration });
         }
-        if let Some(other) = self
-            .shorts
-            .iter()
-            .find(|o| o.id != short.id && o.status != ShortStatus::Rejected && o.overlaps(short))
+        if short.status == ShortStatus::Accepted
+            && !self.allow_overlap
+            && let Some(other) = self
+                .shorts
+                .iter()
+                .find(|o| o.id != short.id && o.status == ShortStatus::Accepted && o.overlaps(short))
         {
             return Err(BatchError::Overlap(other.id));
         }
@@ -348,5 +397,89 @@ impl Batch {
     pub fn remove_short(&mut self, id: ShortId) -> Result<Short, BatchError> {
         let idx = self.shorts.iter().position(|s| s.id == id).ok_or(BatchError::UnknownShort)?;
         Ok(self.shorts.remove(idx))
+    }
+
+    /// Принять или отклонить; принятие проверяет перекрытия.
+    pub fn set_status(&mut self, id: ShortId, status: ShortStatus) -> Result<(), BatchError> {
+        let mut s = self.short(id).ok_or(BatchError::UnknownShort)?.clone();
+        s.status = status;
+        self.update_short(s)
+    }
+
+    /// Делит шортс в точке `t`; обе части сохраняют статус и заголовок. Возвращает id второй части.
+    pub fn split_short(&mut self, id: ShortId, t: f64) -> Result<ShortId, BatchError> {
+        let idx = self.shorts.iter().position(|s| s.id == id).ok_or(BatchError::UnknownShort)?;
+        let s = &self.shorts[idx];
+        if !(t - s.start >= MIN_SPLIT && s.end - t >= MIN_SPLIT) {
+            return Err(BatchError::BadSplit);
+        }
+        let second = Short { id: ShortId::new(), start: t, ..s.clone() };
+        let second_id = second.id;
+        self.shorts[idx].end = t;
+        self.shorts.push(second);
+        Ok(second_id)
+    }
+
+    /// Следующий по времени неотклонённый шортс того же исходника.
+    pub fn next_short(&self, id: ShortId) -> Option<&Short> {
+        let s = self.short(id)?;
+        self.shorts_of(s.source_id)
+            .into_iter()
+            .filter(|o| o.id != id && o.status != ShortStatus::Rejected && o.start >= s.start)
+            .min_by(|a, b| a.start.total_cmp(&b.start))
+    }
+
+    /// Объединяет шортс со следующим (всё между ними — тоже в шортсе). Итог принят, если принят хоть один;
+    /// заголовок и оценка — от лучшего по оценке. Возвращает id итогового шортса (первого).
+    pub fn merge_with_next(&mut self, id: ShortId) -> Result<ShortId, BatchError> {
+        let first = self.short(id).ok_or(BatchError::UnknownShort)?.clone();
+        let next = self.next_short(id).ok_or(BatchError::NothingToMerge)?.clone();
+        let mut merged = first.clone();
+        merged.end = first.end.max(next.end);
+        if first.status == ShortStatus::Accepted || next.status == ShortStatus::Accepted {
+            merged.status = ShortStatus::Accepted;
+        }
+        if next.score.unwrap_or(-1.0) > first.score.unwrap_or(-1.0) || first.title.is_empty() {
+            merged.title = next.title.clone();
+            merged.score = next.score;
+            merged.reason = next.reason.clone();
+        }
+        for k in &next.keywords {
+            if !merged.keywords.contains(k) {
+                merged.keywords.push(k.clone());
+            }
+        }
+        for f in &next.flags {
+            if !merged.flags.contains(f) {
+                merged.flags.push(*f);
+            }
+        }
+        // Проверка без второго шортса: он исчезает.
+        let removed = self.remove_short(next.id)?;
+        if let Err(e) = self.update_short(merged) {
+            self.shorts.push(removed);
+            return Err(e);
+        }
+        Ok(id)
+    }
+
+    /// Новая нарезка исходника: прежние предложенные анализом шортсы, кроме принятых, убираются; новые
+    /// кандидаты добавляются, если больше половины их длительности не занято принятыми шортсами.
+    pub fn replace_candidates(&mut self, source: SourceId, candidates: Vec<Short>) {
+        self.shorts.retain(|s| !(s.source_id == source && s.auto && s.status != ShortStatus::Accepted));
+        for c in candidates {
+            let covered: f64 = self
+                .shorts
+                .iter()
+                .filter(|s| s.source_id == source && s.status == ShortStatus::Accepted)
+                .map(|s| (s.end.min(c.end) - s.start.max(c.start)).max(0.0))
+                .sum();
+            if covered > c.duration() / 2.0 {
+                continue;
+            }
+            if let Err(e) = self.add_short(c) {
+                log::warn!("кандидат не добавлен: {e}");
+            }
+        }
     }
 }

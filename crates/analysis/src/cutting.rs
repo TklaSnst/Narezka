@@ -19,7 +19,7 @@ use crate::transcript::Transcript;
 use crate::AnalysisError;
 
 /// Версия формата кэша нарезки; при несовпадении нарезка делается заново.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 // --- Промпты ---
 
@@ -93,6 +93,8 @@ pub enum BlockKind {
     Intro,
     Outro,
     Ad,
+    /// Зона пропуска, размеченная пользователем (модели не показывается).
+    Skip,
 }
 
 /// Кто нашёл границу в начале блока.
@@ -104,12 +106,14 @@ pub enum Found {
     Llm,
     Embed,
     Both,
+    /// Край зоны пропуска пользователя.
+    Manual,
 }
 
 impl Found {
     /// Граница подтверждена или очевидна.
     pub fn sure(self) -> bool {
-        matches!(self, Found::Start | Found::Both)
+        matches!(self, Found::Start | Found::Both | Found::Manual)
     }
 }
 
@@ -170,6 +174,9 @@ pub struct Cutting {
     pub prompts: String,
     pub blocks: Vec<Block>,
     pub candidates: Vec<Candidate>,
+    /// Зоны пропуска пользователя, с которыми нарезали ([`CutOptions::skip`]).
+    #[serde(default)]
+    pub skips: Vec<(f64, f64)>,
 }
 
 impl Cutting {
@@ -177,14 +184,14 @@ impl Cutting {
         dir.join(format!("{hash}.cut.json"))
     }
 
-    /// Нарезка из кэша, если она сделана той же моделью с теми же промптами.
-    pub fn load_cached(dir: &Path, hash: &str, model: &str, prompts: &str) -> Option<Self> {
+    /// Нарезка из кэша, если она сделана той же моделью с теми же промптами и зонами пропуска.
+    pub fn load_cached(dir: &Path, hash: &str, model: &str, prompts: &str, skips: &[(f64, f64)]) -> Option<Self> {
         let path = Self::cache_file(dir, hash);
         let text = std::fs::read_to_string(&path).ok()?;
         match serde_json::from_str::<Cutting>(&text) {
-            Ok(c) if c.version == FORMAT_VERSION && c.model == model && c.prompts == prompts => Some(c),
+            Ok(c) if c.version == FORMAT_VERSION && c.model == model && c.prompts == prompts && c.skips == skips => Some(c),
             Ok(_) => {
-                log::info!("{}: другая модель, промпты или формат — нарезка заново", path.display());
+                log::info!("{}: другая модель, промпты, зоны пропуска или формат — нарезка заново", path.display());
                 None
             }
             Err(e) => {
@@ -225,6 +232,8 @@ pub struct CutOptions {
     pub pad: f64,
     /// Тема видео для прохода 2 (название файла).
     pub title: String,
+    /// Зоны пропуска пользователя (начало, конец), с: эти предложения модель не видит, кандидатов в них нет.
+    pub skip: Vec<(f64, f64)>,
 }
 
 impl Default for CutOptions {
@@ -239,6 +248,7 @@ impl Default for CutOptions {
             target: 60.0,
             pad: 0.3,
             title: String::new(),
+            skip: Vec::new(),
         }
     }
 }
@@ -475,6 +485,54 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+// --- Зоны пропуска ---
+
+/// Предложение в зоне пропуска — если его середина внутри зоны.
+pub fn skipped(sentences: &[Sentence], skip: &[(f64, f64)]) -> Vec<bool> {
+    sentences
+        .iter()
+        .map(|s| {
+            let mid = (s.start + s.end) / 2.0;
+            skip.iter().any(|&(a, b)| a <= mid && mid < b)
+        })
+        .collect()
+}
+
+/// Блоки с вырезанными зонами пропуска: каждая серия пропущенных предложений — блок `Skip`,
+/// края зон — надёжные границы (`Found::Manual`) для соседних блоков.
+pub fn apply_skips(sentences: &[Sentence], blocks: Vec<Block>, skipped: &[bool]) -> Vec<Block> {
+    if !skipped.contains(&true) {
+        return blocks;
+    }
+    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        let mut first = b.sentences.start;
+        let mut found = b.found;
+        for i in b.sentences.clone() {
+            let run_ends = i + 1 == b.sentences.end || skipped[i + 1] != skipped[i];
+            if !run_ends {
+                continue;
+            }
+            if skipped[i] {
+                match out.last_mut() {
+                    // Зона продолжается из прошлого блока.
+                    Some(last) if last.kind == BlockKind::Skip && last.sentences.end == first => {
+                        *last = make_block(sentences, last.sentences.start..i + 1, BlockKind::Skip, String::new(), last.found);
+                    }
+                    _ => out.push(make_block(sentences, first..i + 1, BlockKind::Skip, String::new(), Found::Manual)),
+                }
+            } else {
+                let after_skip = first > 0 && skipped[first - 1];
+                let f = if after_skip { Found::Manual } else { found };
+                out.push(make_block(sentences, first..i + 1, b.kind, b.topic.clone(), f));
+            }
+            first = i + 1;
+            found = Found::Manual;
+        }
+    }
+    out
+}
+
 // --- Проход 2 ---
 
 #[derive(Debug, Clone, Deserialize)]
@@ -566,6 +624,18 @@ pub fn snap(t: &Transcript, words: Range<usize>, pad: f64) -> (f64, f64) {
     (start, end)
 }
 
+/// Соседние кандидаты, прилипшие к одной паузе с двух сторон, делят её пополам — иначе их нельзя принять оба.
+pub fn separate(candidates: &mut [Candidate]) {
+    for i in 1..candidates.len() {
+        let (a, b) = candidates.split_at_mut(i);
+        let (prev, next) = (&mut a[i - 1], &mut b[0]);
+        if prev.end > next.start && prev.start < next.start {
+            let mid = (prev.end + next.start) / 2.0;
+            (prev.end, next.start) = (mid, mid);
+        }
+    }
+}
+
 // --- Задача ---
 
 /// Стадии нарезки для прогресса.
@@ -599,7 +669,7 @@ impl CutJob {
     }
 
     pub fn cached(&self) -> Option<Cutting> {
-        Cutting::load_cached(&self.cache_dir, &self.hash, &self.model_name(), &self.prompts.fingerprint)
+        Cutting::load_cached(&self.cache_dir, &self.hash, &self.model_name(), &self.prompts.fingerprint, &self.opts.skip)
     }
 
     /// Нарезка из кэша или заново. Серверы эмбеддингов и LLM живут по очереди и завершаются до возврата.
@@ -618,7 +688,8 @@ impl CutJob {
             }
         }
         let started = std::time::Instant::now();
-        let sentences = crate::sentences(t, &crate::SplitOptions::default());
+        let mut sentences = crate::sentences(t, &crate::SplitOptions::default());
+        let skipped = skipped(&sentences, &self.opts.skip);
 
         progress(CutStage::Structure, 0.0);
         let (emb, embed_bounds) = if sentences.len() < 3 {
@@ -631,6 +702,10 @@ impl CutJob {
             (emb, b)
         };
         let embed_secs = started.elapsed().as_secs_f32();
+        // Зоны пропуска модели не показываем — как повторы whisper (эмбеддинги уже посчитаны по всему тексту).
+        for (s, &skip) in sentences.iter_mut().zip(&skipped) {
+            s.repeat |= skip;
+        }
 
         progress(CutStage::Model, 0.0);
         let server = sc_llama::Server::start(&sc_llama::ServerOptions::chat(&self.llm_model), cancel)?;
@@ -642,10 +717,14 @@ impl CutJob {
             progress(CutStage::Llm, PASS1_SHARE * k as f32 / wins.len() as f32);
             let mut w = w.clone();
             for _ in 0..PASS1_RETRIES {
+                let user = prompt_lines(&sentences, w.sentences.clone());
+                if user.is_empty() {
+                    break; // окно целиком в зоне пропуска
+                }
                 let max = max_blocks(&sentences, &w);
                 let req = sc_llama::ChatRequest {
                     system: self.prompts.pass1.clone(),
-                    user: prompt_lines(&sentences, w.sentences.clone()),
+                    user,
                     schema: limit_blocks(&self.prompts.pass1_schema, max),
                     temperature: 0.3,
                     max_tokens: 3072,
@@ -668,6 +747,7 @@ impl CutJob {
             }
         }
         let blocks = merge_blocks(&sentences, &llm, &embed_bounds, &emb, &self.opts);
+        let blocks = apply_skips(&sentences, blocks, &skipped);
         let pass1_secs = started.elapsed().as_secs_f32() - embed_secs - load_secs;
 
         let content: Vec<usize> = (0..blocks.len()).filter(|&i| blocks[i].kind == BlockKind::Content).collect();
@@ -690,6 +770,7 @@ impl CutJob {
             candidates.push(c);
         }
         drop(server);
+        separate(&mut candidates);
         progress(CutStage::Llm, 1.0);
         log::info!(
             "нарезка: {} предложений → {} блоков ({} с подтверждённой границей), {} кандидатов; эмбеддинги {embed_secs:.1} с, \
@@ -706,6 +787,7 @@ impl CutJob {
             prompts: self.prompts.fingerprint.clone(),
             blocks,
             candidates,
+            skips: self.opts.skip.clone(),
         };
         if let Err(e) = cutting.save_cached(&self.cache_dir, &self.hash) {
             log::warn!("кэш нарезки не записан: {e}");
@@ -960,10 +1042,61 @@ mod tests {
     #[test]
     fn cache_checks_model_and_prompts() {
         let tmp = tempfile::tempdir().unwrap();
-        let c = Cutting { version: FORMAT_VERSION, model: "m.gguf".into(), prompts: "p1".into(), blocks: vec![], candidates: vec![] };
+        let c = Cutting { version: FORMAT_VERSION, model: "m.gguf".into(), prompts: "p1".into(), blocks: vec![], candidates: vec![], skips: vec![] };
         c.save_cached(tmp.path(), "h").unwrap();
-        assert_eq!(Cutting::load_cached(tmp.path(), "h", "m.gguf", "p1"), Some(c));
-        assert_eq!(Cutting::load_cached(tmp.path(), "h", "m.gguf", "p2"), None);
-        assert_eq!(Cutting::load_cached(tmp.path(), "h", "x.gguf", "p1"), None);
+        assert_eq!(Cutting::load_cached(tmp.path(), "h", "m.gguf", "p1", &[]), Some(c));
+        assert_eq!(Cutting::load_cached(tmp.path(), "h", "m.gguf", "p2", &[]), None);
+        assert_eq!(Cutting::load_cached(tmp.path(), "h", "x.gguf", "p1", &[]), None);
+        assert_eq!(Cutting::load_cached(tmp.path(), "h", "m.gguf", "p1", &[(10.0, 20.0)]), None, "другие зоны пропуска");
+    }
+
+    #[test]
+    fn skip_zones_split_blocks() {
+        let s = sents(20); // предложения по 5 с: 0–4, 5–9, …
+        let blocks = vec![
+            make_block(&s, 0..8, BlockKind::Content, "а".into(), Found::Start),
+            make_block(&s, 8..20, BlockKind::Content, "б".into(), Found::Llm),
+        ];
+        // Зона 24–46 с: середины предложений 5..=8 (27, 32, 37, 42 с) — внутри, через границу блоков.
+        let skipped = skipped(&s, &[(24.0, 46.0)]);
+        assert_eq!(skipped.iter().filter(|&&x| x).count(), 4);
+        let out = apply_skips(&s, blocks.clone(), &skipped);
+        let got: Vec<_> = out.iter().map(|b| (b.sentences.clone(), b.kind, b.found)).collect();
+        assert_eq!(
+            got,
+            [
+                (0..5, BlockKind::Content, Found::Start),
+                (5..9, BlockKind::Skip, Found::Manual),
+                (9..20, BlockKind::Content, Found::Manual),
+            ]
+        );
+        assert_eq!(out[2].topic, "б");
+        // Без зон — без изменений.
+        assert_eq!(apply_skips(&s, blocks.clone(), &[false; 20]), blocks);
+        // Пропущенные предложения не попадают в текст для модели.
+        let mut hidden = s.clone();
+        for (x, &k) in hidden.iter_mut().zip(&skipped) {
+            x.repeat |= k;
+        }
+        let lines = prompt_lines(&hidden, 4..10);
+        assert!(lines.contains("[4]") && lines.contains("[9]") && !lines.contains("[5]"), "{lines}");
+    }
+
+    #[test]
+    fn neighbours_share_pause() {
+        let c = |start: f64, end: f64| Candidate {
+            sentences: 0..1,
+            start,
+            end,
+            block: 0,
+            score: 5,
+            reason: String::new(),
+            title: String::new(),
+            keywords: vec![],
+            flags: vec![],
+        };
+        let mut v = vec![c(0.0, 10.3), c(10.1, 20.0), c(25.0, 30.0)];
+        separate(&mut v);
+        assert_eq!(v.iter().map(|c| (c.start, c.end)).collect::<Vec<_>>(), [(0.0, 10.2), (10.2, 20.0), (25.0, 30.0)]);
     }
 }

@@ -1,4 +1,5 @@
-//! Таймлайн исходника: шкала, шортсы цветными блоками, отметки in/out, курсор воспроизведения.
+//! Таймлайн исходника: шкала, шортсы цветными блоками (кандидаты и отклонённые — блёклые), зоны пропуска,
+//! отметки in/out, курсор воспроизведения.
 //! Колесо — масштаб вокруг указателя, горизонтальная прокрутка (Shift+колесо) — сдвиг,
 //! клик/перетаскивание — перемотка, края выбранного шортса тянутся.
 
@@ -16,14 +17,37 @@ const TICK_MIN_PX: f64 = 80.0;
 const TICK_STEPS: &[f64] =
     &[0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0];
 
-/// Шортс на таймлайне.
+/// Как рисовать шортс.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Look {
+    Accepted,
+    Candidate,
+    Rejected,
+}
+
+/// Шортс на таймлайне. Рисуются по порядку: последний — сверху (и ловит клик первым).
 pub struct Block {
     pub id: ShortId,
     pub start: f64,
     pub end: f64,
     pub label: String,
     pub color: Color32,
+    pub look: Look,
 }
+
+/// Зона пропуска на таймлайне.
+pub struct Zone {
+    pub start: f64,
+    pub end: f64,
+    /// Размечена пользователем (иначе — найдена анализом).
+    pub manual: bool,
+}
+
+const CANDIDATE_COLOR: Color32 = Color32::from_rgb(95, 115, 150);
+const CANDIDATE_EDGE: Color32 = Color32::from_rgb(140, 160, 200);
+const REJECTED_COLOR: Color32 = Color32::from_gray(58);
+const ZONE_AUTO: Color32 = Color32::from_rgb(220, 150, 60);
+const ZONE_MANUAL: Color32 = Color32::from_rgb(220, 70, 70);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
@@ -126,6 +150,7 @@ impl Timeline {
         ui: &mut egui::Ui,
         pos: f64,
         blocks: &[Block],
+        zones: &[Zone],
         selected: Option<ShortId>,
         mark_in: Option<f64>,
         mark_out: Option<f64>,
@@ -171,7 +196,7 @@ impl Timeline {
                 return None;
             }
             let t = v.x_to_t(p.x, rect);
-            blocks.iter().find(|b| b.start <= t && t <= b.end).map(|b| b.id)
+            blocks.iter().rev().find(|b| b.start <= t && t <= b.end).map(|b| b.id)
         };
 
         if let Some(p) = resp.hover_pos()
@@ -210,7 +235,7 @@ impl Timeline {
             }
         }
 
-        self.paint(ui, rect, ruler, track, pos, blocks, selected, mark_in, mark_out);
+        self.paint(ui, rect, ruler, track, pos, blocks, zones, selected, mark_in, mark_out);
         actions
     }
 
@@ -223,6 +248,7 @@ impl Timeline {
         track: Rect,
         pos: f64,
         blocks: &[Block],
+        zones: &[Zone],
         selected: Option<ShortId>,
         mark_in: Option<f64>,
         mark_out: Option<f64>,
@@ -250,15 +276,34 @@ impl Timeline {
             t += step;
         }
 
+        // Зоны пропуска: подложка и полоса по нижнему краю.
+        for z in zones {
+            let (x0, x1) = (v.t_to_x(z.start, rect), v.t_to_x(z.end, rect));
+            if x1 < rect.min.x || x0 > rect.max.x {
+                continue;
+            }
+            let color = if z.manual { ZONE_MANUAL } else { ZONE_AUTO };
+            painter.rect_filled(Rect::from_x_y_ranges(x0..=x1, track.y_range()), 0.0, color.gamma_multiply(0.12));
+            painter.rect_filled(Rect::from_x_y_ranges(x0..=x1, (track.max.y - 3.0)..=track.max.y), 0.0, color);
+        }
+
         // Шортсы.
         for b in blocks {
-            let r = Rect::from_x_y_ranges(v.t_to_x(b.start, rect)..=v.t_to_x(b.end, rect), track.shrink2(Vec2::new(0.0, 4.0)).y_range());
+            let r = Rect::from_x_y_ranges(v.t_to_x(b.start, rect)..=v.t_to_x(b.end, rect), track.shrink2(Vec2::new(0.0, 5.0)).y_range());
             if r.max.x < rect.min.x || r.min.x > rect.max.x {
                 continue;
             }
             let is_sel = Some(b.id) == selected;
-            let fill = if is_sel { b.color } else { b.color.gamma_multiply(0.6) };
+            let base = match b.look {
+                Look::Accepted => b.color,
+                Look::Candidate => CANDIDATE_COLOR,
+                Look::Rejected => REJECTED_COLOR,
+            };
+            let fill = if is_sel || b.look == Look::Rejected { base } else { base.gamma_multiply(0.6) };
             painter.rect_filled(r, 3.0, fill);
+            if b.look == Look::Candidate && !is_sel {
+                painter.rect_stroke(r, 3.0, Stroke::new(1.0, CANDIDATE_EDGE), egui::StrokeKind::Inside);
+            }
             if is_sel {
                 painter.rect_stroke(r, 3.0, Stroke::new(2.0, Color32::WHITE), egui::StrokeKind::Inside);
             }

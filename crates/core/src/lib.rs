@@ -10,7 +10,7 @@ pub mod template;
 
 pub use batch::{
     Batch, BatchError, Codec, ConflictPolicy, Container, EncoderPref, MediaInfo, OutputSettings,
-    Short, ShortId, ShortStatus, Source, SourceId, SourceStatus,
+    MIN_SPLIT, Short, ShortFlag, ShortId, ShortStatus, Source, SourceId, SourceStatus, TimeRange,
 };
 pub use geometry::{Color, Rect};
 pub use paths::Paths;

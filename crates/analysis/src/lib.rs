@@ -14,7 +14,9 @@ pub mod whisper;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-pub use cutting::{Block, BlockKind, Candidate, CutJob, CutOptions, CutStage, Cutting, Flag, Found, Prompts};
+pub use cutting::{
+    Block, BlockKind, Candidate, CutJob, CutOptions, CutStage, Cutting, Flag, Found, Prompts, apply_skips, separate, skipped,
+};
 pub use models::{ModelSpec, QWEN35_9B, QWEN3_EMBED, SILERO_VAD, WHISPER_TURBO};
 pub use sentences::{Pause, Sentence, SplitOptions, pause_after_word, pauses, sentences};
 pub use topics::{TilingOptions, TopicBoundary, embed_sentences, topic_boundaries};

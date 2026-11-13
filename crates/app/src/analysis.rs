@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
 use sc_analysis::{
-    AnalysisError, CutJob, CutOptions, CutStage, Cutting, ModelSpec, Prompts, QWEN3_EMBED, QWEN35_9B, SILERO_VAD, Stage,
-    TranscribeJob, Transcript, WHISPER_TURBO,
+    AnalysisError, Candidate, CutJob, CutOptions, CutStage, Cutting, Flag, ModelSpec, Prompts, QWEN3_EMBED, QWEN35_9B,
+    SILERO_VAD, Stage, TranscribeJob, Transcript, WHISPER_TURBO,
 };
-use sc_core::{Settings, Source, SourceId, SourceStatus};
+use sc_core::{Settings, Short, ShortFlag, ShortStatus, Source, SourceId, SourceStatus};
 
 use crate::App;
 use crate::import::file_name;
@@ -58,7 +58,7 @@ pub struct AnalysisState {
     transcripts: HashMap<SourceId, Arc<Transcript>>,
     /// Почему ролик не распознан (ключ i18n); `analysis-cancelled` — отменён пользователем.
     errors: HashMap<SourceId, &'static str>,
-    /// Кандидаты в шортсы (экран «Нарезка» — шаг 2.4).
+    /// Блоки и кандидаты; кандидаты копируются в пачку шортсами (`Short::auto`).
     cuttings: HashMap<SourceId, Arc<Cutting>>,
     /// Почему распознанный ролик не нарезан (ключ i18n).
     cut_errors: HashMap<SourceId, &'static str>,
@@ -97,6 +97,22 @@ pub enum RowAction {
 }
 
 impl App {
+    pub(crate) fn transcript_of(&self, id: SourceId) -> Option<Arc<Transcript>> {
+        self.analysis.transcripts.get(&id).cloned()
+    }
+
+    pub(crate) fn cutting_of(&self, id: SourceId) -> Option<Arc<Cutting>> {
+        self.analysis.cuttings.get(&id).cloned()
+    }
+
+    /// Ролик в очереди или анализируется; `Some(текст стадии)` — анализируется сейчас.
+    pub(crate) fn analysis_busy(&self, id: SourceId) -> Option<Option<String>> {
+        if let Some(r) = self.analysis.running.as_ref().filter(|r| r.id == id) {
+            return Some(Some(self.stage_text(r)));
+        }
+        self.analysis.queue.contains(&id).then_some(None)
+    }
+
     fn whisper_model(&self) -> PathBuf {
         sc_analysis::whisper_model_path(self.settings.analysis.whisper_model.as_deref(), &self.paths.models_dir())
     }
@@ -215,6 +231,7 @@ impl App {
             prompts,
             opts: CutOptions {
                 title: s.path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                skip: s.skip.iter().map(|z| (z.start, z.end)).collect(),
                 ..CutOptions::default()
             },
         })
@@ -252,6 +269,14 @@ impl App {
                 }
                 match result {
                     Ok(c) => {
+                        // Отступ за последним словом может уйти за конец ролика.
+                        let duration = self.batch.source(id).and_then(|s| s.info.as_ref()).map_or(f64::INFINITY, |i| i.duration);
+                        let shorts = c
+                            .candidates
+                            .iter()
+                            .map(|k| Short { end: k.end.min(duration), ..candidate_short(id, k) })
+                            .collect();
+                        self.batch.replace_candidates(id, shorts);
                         self.analysis.cuttings.insert(id, Arc::new(c));
                     }
                     Err(key) => {
@@ -309,8 +334,8 @@ impl App {
         self.enqueue_analysis(id);
     }
 
-    /// Нарезать заново по тому же транскрипту — например, после правки промптов.
-    fn recut(&mut self, id: SourceId) {
+    /// Нарезать заново по тому же транскрипту — например, после правки промптов или зон пропуска.
+    pub(crate) fn recut(&mut self, id: SourceId) {
         if let Some(hash) = self.batch.source(id).and_then(|s| s.hash.clone()) {
             let _ = std::fs::remove_file(Cutting::cache_file(&self.paths.analysis_dir(), &hash));
         }
@@ -569,6 +594,29 @@ impl App {
                 self.save_settings();
             }
         }
+    }
+}
+
+/// Кандидат нарезки → шортс пачки, ждущий решения пользователя.
+fn candidate_short(source: SourceId, c: &Candidate) -> Short {
+    Short {
+        title: c.title.clone(),
+        score: (c.score > 0).then_some(c.score as f32),
+        reason: c.reason.clone(),
+        status: ShortStatus::Candidate,
+        keywords: c.keywords.clone(),
+        flags: c
+            .flags
+            .iter()
+            .map(|f| match f {
+                Flag::Unsure => ShortFlag::Unsure,
+                Flag::NotStandalone => ShortFlag::NotStandalone,
+                Flag::TooLong => ShortFlag::TooLong,
+                Flag::NoScore => ShortFlag::NoScore,
+            })
+            .collect(),
+        auto: true,
+        ..Short::manual(source, c.start, c.end)
     }
 }
 

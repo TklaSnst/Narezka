@@ -106,6 +106,7 @@ impl Server {
         if opts.embedding {
             cmd.arg("--embedding");
         }
+        kill_with_parent(&mut cmd);
         log::info!("llama-server: {} на порту {port}", opts.model.display());
         let mut child = cmd.spawn().map_err(|source| LlamaError::Spawn { path: bin, source })?;
         let tail = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_TAIL)));
@@ -299,6 +300,30 @@ fn forward_log(stderr: std::process::ChildStderr, tail: Arc<Mutex<VecDeque<Strin
         }
     });
 }
+
+/// Сервер умирает вместе с приложением, даже если оно убито сигналом и `Drop` не сработал, —
+/// иначе модель остаётся в VRAM. Сигнал приходит при завершении потока-родителя: сервер живёт
+/// внутри одной задачи анализа, поток которой ждёт его конца.
+#[cfg(target_os = "linux")]
+fn kill_with_parent(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: между fork и exec вызываются только async-signal-safe prctl/getppid.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Родитель мог умереть до prctl.
+            if libc::getppid() == 1 {
+                return Err(std::io::Error::other("родитель завершился"));
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn kill_with_parent(_cmd: &mut Command) {}
 
 #[cfg(test)]
 mod tests {

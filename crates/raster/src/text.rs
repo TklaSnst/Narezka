@@ -1,30 +1,17 @@
 //! Текст и капсула: раскладка — cosmic-text, контуры глифов — tiny-skia (заливка, обводка, плашки акцента).
 //! Глифы рисуются векторно без хинтинга: результат не зависит от того, кто его потом масштабирует.
 
-use std::sync::{LazyLock, Mutex};
-
-use cosmic_text::{Attrs, Buffer, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap};
+use cosmic_text::{Attrs, Buffer, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, Weight, Wrap};
 use sc_core::{AccentMode, Align, Color, VAlign};
 use swash::zeno::Command;
 use tiny_skia::{FillRule, LineJoin, PathBuilder, Pixmap, Stroke, Transform};
+
+use crate::fonts::{FONTS, Fonts, split_font_name};
 
 /// Межстрочный интервал в долях кегля.
 const LINE_HEIGHT: f32 = 1.2;
 /// Текст, не влезающий в прямоугольник, уменьшается до этой доли кегля, дальше — вылезает.
 const MIN_FIT: f32 = 0.4;
-
-struct Fonts {
-    system: FontSystem,
-    cache: SwashCache,
-}
-
-static FONTS: LazyLock<Mutex<Fonts>> =
-    LazyLock::new(|| Mutex::new(Fonts { system: FontSystem::new(), cache: SwashCache::new() }));
-
-/// Загружает системные шрифты (первый раз — сотни миллисекунд); вызывать заранее в фоне.
-pub fn warm_up() {
-    LazyLock::force(&FONTS);
-}
 
 /// Разметка акцента: `*так*` → куски `(текст, акцент)`. Непарная `*` остаётся в тексте.
 pub fn parse_accent(s: &str) -> Vec<(String, bool)> {
@@ -153,39 +140,17 @@ pub fn draw_text(pm: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), content: &
     size
 }
 
-/// Семейство и насыщенность по имени шрифта: «DejaVu Sans», «DejaVu Sans Bold», «sans-serif».
-/// Начертание в конце имени отделяется, если семейства с полным именем нет.
+/// Семейство и насыщенность по имени шрифта: «DejaVu Sans», «Montserrat ExtraBold», «sans-serif Bold».
 fn resolve_font<'a>(system: &FontSystem, name: &'a str) -> (Family<'a>, Weight) {
-    let generic = match name {
-        "sans-serif" | "sans" => Some(Family::SansSerif),
-        "serif" => Some(Family::Serif),
-        "monospace" | "mono" => Some(Family::Monospace),
-        _ => None,
-    };
-    if let Some(f) = generic {
-        return (f, Weight::NORMAL);
-    }
     let known = |n: &str| system.db().faces().any(|f| f.families.iter().any(|(fam, _)| fam.eq_ignore_ascii_case(n)));
-    if !known(name)
-        && let Some((family, last)) = name.rsplit_once(' ')
-    {
-        let weight = match last.to_ascii_lowercase().as_str() {
-            "thin" => Some(Weight::THIN),
-            "extralight" => Some(Weight::EXTRA_LIGHT),
-            "light" => Some(Weight::LIGHT),
-            "regular" => Some(Weight::NORMAL),
-            "medium" => Some(Weight::MEDIUM),
-            "semibold" => Some(Weight::SEMIBOLD),
-            "bold" => Some(Weight::BOLD),
-            "extrabold" => Some(Weight::EXTRA_BOLD),
-            "black" => Some(Weight::BLACK),
-            _ => None,
-        };
-        if let Some(w) = weight {
-            return (Family::Name(family), w);
-        }
-    }
-    (Family::Name(name), Weight::NORMAL)
+    let (family, weight) = split_font_name(name, known);
+    let family = match family.to_ascii_lowercase().as_str() {
+        "sans-serif" | "sans" => Family::SansSerif,
+        "serif" => Family::Serif,
+        "monospace" | "mono" => Family::Monospace,
+        _ => Family::Name(family),
+    };
+    (family, Weight(weight))
 }
 
 /// Контур глифа (единицы — пиксели, ось y вверх) с началом в точке `(gx, gy)` холста.

@@ -331,14 +331,15 @@ fn main() -> eframe::Result {
     // До любых потоков и до инициализации ggml (whisper).
     sc_analysis::prepare_ggml_env();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // Системные шрифты для текстовых слоёв грузятся сотни миллисекунд — заранее и не в UI-потоке.
-    std::thread::spawn(sc_raster::warm_up);
     sc_mpv::set_c_numeric_locale();
 
     let paths = Paths::from_env().expect("не удалось определить домашний каталог");
     if let Err(e) = paths.ensure() {
         log::error!("не удалось создать каталоги приложения: {e}");
     }
+    // Шрифты для текстовых слоёв грузятся сотни миллисекунд — заранее и не в UI-потоке.
+    sc_raster::fonts::set_user_dir(paths.fonts_dir());
+    std::thread::spawn(sc_raster::warm_up);
     let settings = Settings::load_or_recover(&paths.settings_file());
     let title = I18n::new(settings.language).tr("app-title");
 

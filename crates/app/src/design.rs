@@ -41,6 +41,7 @@ const CROP_FRAME: Color32 = Color32::from_rgb(255, 210, 60);
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif"];
 const VIDEO_EXTS: &[&str] = &["mp4", "mkv", "webm", "mov", "m4v"];
+const FONT_EXTS: &[&str] = &["ttf", "otf", "ttc", "otc"];
 
 pub struct DesignState {
     /// Выделенный слой; `None` — фон.
@@ -99,6 +100,8 @@ pub enum FileTarget {
     CapsuleLogo(usize),
     BackgroundImage,
     BackgroundVideo,
+    /// Свой файл шрифта для текста или капсулы слоя.
+    Font(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -199,7 +202,7 @@ impl App {
             NewLayer::Text => Layer::Text {
                 rect: Rect::new(0.06, 0.15, 0.88, 0.12),
                 content: self.i18n.tr("design-new-text"),
-                font: "sans-serif Bold".into(),
+                font: sc_raster::fonts::font_name(sc_raster::fonts::SANS, 800),
                 size: 0.07,
                 color: Color::WHITE,
                 accent_color: Color::rgb(0xff, 0x3b, 0x30),
@@ -217,7 +220,7 @@ impl App {
                 rect: Rect::new(0.25, 0.14, 0.5, 0.045),
                 logo: None,
                 text: self.i18n.tr("design-new-capsule"),
-                font: "sans-serif Bold".into(),
+                font: sc_raster::fonts::font_name(sc_raster::fonts::SANS, 700),
                 text_color: Color::WHITE,
                 fill: Color([0x1d, 0x1d, 0x1f, 0xcc]),
             },
@@ -278,11 +281,13 @@ impl App {
 
     fn pick_file(&mut self, target: FileTarget) {
         self.dialog_open = true;
-        let image = !matches!(target, FileTarget::BackgroundVideo);
-        let title = self.i18n.tr(if image { "design-pick-image" } else { "design-pick-video" });
-        let filter = self.i18n.tr(if image { "design-filter-image" } else { "design-filter-video" });
+        let (title, filter, exts) = match target {
+            FileTarget::BackgroundVideo => ("design-pick-video", "design-filter-video", VIDEO_EXTS),
+            FileTarget::Font(_) => ("design-pick-font", "design-filter-font", FONT_EXTS),
+            _ => ("design-pick-image", "design-filter-image", IMAGE_EXTS),
+        };
+        let (title, filter) = (self.i18n.tr(title), self.i18n.tr(filter));
         self.jobs.spawn(move || {
-            let exts = if image { IMAGE_EXTS } else { VIDEO_EXTS };
             let file = rfd::FileDialog::new().set_title(title).add_filter(filter, exts).pick_file();
             Msg::PickedFile(target, file)
         });
@@ -312,6 +317,17 @@ impl App {
                 let darken = bg_darken(&t.background);
                 t.background = Background::Video { path, darken };
             }),
+            FileTarget::Font(i) => match sc_raster::fonts::install_font(&path) {
+                Ok(name) => self.design_edit("file", |t| {
+                    if let Some(Layer::Text { font, .. } | Layer::Capsule { font, .. }) = t.layers.get_mut(i) {
+                        *font = name;
+                    }
+                }),
+                Err(e) => {
+                    log::error!("шрифт {path:?}: {e}");
+                    self.design.error = Some("design-font-failed");
+                }
+            },
         }
     }
 
@@ -911,9 +927,7 @@ fn layer_props(ui: &mut egui::Ui, tr: &I18n, l: &mut Layer, i: usize, canvas: Ca
                 row(ui, tr.tr("prop-content"), |ui| {
                     ui.add(egui::TextEdit::multiline(content).desired_rows(2).desired_width(200.0));
                 });
-                row(ui, tr.tr("prop-font"), |ui| {
-                    ui.add(egui::TextEdit::singleline(font).desired_width(200.0)).on_hover_text(tr.tr("prop-font-hint"));
-                });
+                font_props(ui, tr, font, i, pick);
                 row(ui, tr.tr("prop-font-size"), |ui| px(ui, size, cw, 0.005..=0.5));
                 row(ui, tr.tr("prop-color"), |ui| color(ui, c));
                 row(ui, tr.tr("prop-accent"), |ui| {
@@ -955,9 +969,7 @@ fn layer_props(ui: &mut egui::Ui, tr: &I18n, l: &mut Layer, i: usize, canvas: Ca
                 row(ui, tr.tr("prop-content"), |ui| {
                     ui.add(egui::TextEdit::singleline(text).desired_width(200.0));
                 });
-                row(ui, tr.tr("prop-font"), |ui| {
-                    ui.add(egui::TextEdit::singleline(font).desired_width(200.0)).on_hover_text(tr.tr("prop-font-hint"));
-                });
+                font_props(ui, tr, font, i, pick);
                 row(ui, tr.tr("prop-color"), |ui| color(ui, text_color));
                 row(ui, tr.tr("prop-fill"), |ui| color(ui, fill));
             }
@@ -975,6 +987,87 @@ fn layer_props(ui: &mut egui::Ui, tr: &I18n, l: &mut Layer, i: usize, canvas: Ca
     if matches!(l, Layer::MainVideo { .. }) {
         ui.weak(tr.tr("design-crop-hint"));
     }
+}
+
+/// Шрифт: семейство (встроенные, свои, системные — с поиском), начертание из имеющихся у семейства, свой файл.
+fn font_props(ui: &mut egui::Ui, tr: &I18n, font: &mut String, i: usize, pick: &mut Option<FileTarget>) {
+    use sc_raster::fonts::{FontSource, font_name, is_generic, nearest_weight, split_font_name};
+    let list = sc_raster::fonts::families();
+    let fams = list.as_deref().map_or(&[][..], Vec::as_slice);
+    let find = |n: &str| fams.iter().find(|f| f.name.eq_ignore_ascii_case(n));
+    let (family, weight) = split_font_name(font, |n| find(n).is_some());
+    let (family, weight) = (family.to_string(), weight);
+    let entry = find(&family);
+    let mut set = None;
+    row(ui, tr.tr("prop-font"), |ui| {
+        egui::ComboBox::from_id_salt("font-family")
+            .selected_text(&family)
+            .width(196.0)
+            .height(400.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show_ui(ui, |ui| {
+                if list.is_none() {
+                    ui.weak(tr.tr("font-loading"));
+                    return;
+                }
+                let id = ui.id().with("font-filter");
+                let mut filter: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
+                let search = ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tr.tr("font-search")).desired_width(f32::INFINITY));
+                // Печать сразу идёт в поиск.
+                if ui.memory(|m| m.focused().is_none()) {
+                    search.request_focus();
+                }
+                ui.data_mut(|d| d.insert_temp(id, filter.clone()));
+                let filter = filter.to_lowercase();
+                let mut section = None;
+                for f in fams.iter().filter(|f| f.name.to_lowercase().contains(&filter)) {
+                    if section != Some(f.source) {
+                        section = Some(f.source);
+                        ui.separator();
+                        ui.weak(tr.tr(match f.source {
+                            FontSource::Bundled => "font-bundled",
+                            FontSource::User => "font-user",
+                            FontSource::System => "font-system",
+                        }));
+                    }
+                    if ui.selectable_label(f.name.eq_ignore_ascii_case(&family), &f.name).clicked() {
+                        set = Some(font_name(&f.name, nearest_weight(&f.weights, weight)));
+                        ui.close();
+                    }
+                }
+            });
+    });
+    row(ui, String::new(), |ui| {
+        match entry {
+            Some(f) if f.weights.len() > 1 => {
+                egui::ComboBox::from_id_salt("font-weight").selected_text(tr.tr(&weight_key(weight))).show_ui(ui, |ui| {
+                    for &w in &f.weights {
+                        if ui.selectable_label(w == weight, tr.tr(&weight_key(w))).clicked() {
+                            set = Some(font_name(&f.name, w));
+                        }
+                    }
+                });
+            }
+            Some(_) => {
+                ui.weak(tr.tr(&weight_key(weight)));
+            }
+            None if list.is_some() && !is_generic(&family) => {
+                ui.colored_label(Color32::from_rgb(255, 170, 60), "⚠").on_hover_text(tr.tr("font-missing"));
+            }
+            None => {}
+        }
+        if ui.button(tr.tr("font-add-file")).on_hover_text(tr.tr("font-add-file-hint")).clicked() {
+            *pick = Some(FileTarget::Font(i));
+        }
+    });
+    if let Some(name) = set {
+        *font = name;
+    }
+}
+
+/// Ключ i18n начертания: 800 → `font-weight-extrabold`.
+fn weight_key(w: u16) -> String {
+    format!("font-weight-{}", sc_raster::fonts::weight_name(w).to_lowercase())
 }
 
 fn paint_props(ui: &mut egui::Ui, tr: &I18n, paint: &mut Paint) {

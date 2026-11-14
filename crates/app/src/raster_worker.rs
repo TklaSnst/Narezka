@@ -15,6 +15,8 @@ pub struct Rastered {
     pub canvas: Canvas,
     pub background: (Background, Option<Arc<Bitmap>>),
     pub layers: Vec<(Layer, Arc<LayerArt>)>,
+    /// [`sc_raster::fonts::generation`], при котором нарисованы растры.
+    pub fonts: u64,
 }
 
 impl Rastered {
@@ -60,6 +62,10 @@ fn run(jobs: Receiver<Template>, done: Sender<Rastered>, ctx: egui::Context) {
             t = newer;
         }
         let canvas = t.canvas;
+        let fonts = sc_raster::fonts::generation();
+        if cache.as_ref().is_some_and(|c| c.fonts != fonts) {
+            cache = None;
+        }
         // Тот же растр, что в кэше, — тот же Arc (без копии пикселей).
         let background = match cache.as_ref().filter(|c| c.canvas == canvas && c.background.0 == t.background) {
             Some(c) => c.background.1.clone(),
@@ -85,7 +91,7 @@ fn run(jobs: Receiver<Template>, done: Sender<Rastered>, ctx: egui::Context) {
                 (key, art)
             })
             .collect();
-        let r = Rastered { canvas, background: (t.background, background), layers };
+        let r = Rastered { canvas, background: (t.background, background), layers, fonts };
         cache = Some(r.clone());
         if done.send(r).is_err() {
             return;

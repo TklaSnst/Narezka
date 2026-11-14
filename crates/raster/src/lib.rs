@@ -10,9 +10,11 @@ use std::path::{Path, PathBuf};
 use image::imageops::FilterType;
 use sc_core::{Align, Background, Canvas, Color, Layer, Paint, Rect, Shadow, Template, VAlign, gradient_t, rounded_rect_coverage};
 
+pub mod fonts;
 pub mod text;
 
-pub use text::{TextStyle, warm_up};
+pub use fonts::warm_up;
+pub use text::TextStyle;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RasterError {

@@ -61,6 +61,8 @@ pub struct Player {
     gpu_layers: Vec<Option<Layer>>,
     gpu_bg: Option<Background>,
     gpu_canvas: Option<Canvas>,
+    /// Поколение шрифтов, при котором нарисованы растры в композиторе.
+    fonts: u64,
     /// Размер холста на экране в пикселях (из прошлого кадра UI).
     canvas_size: (u32, u32),
     canvas_tex: Option<egui::TextureId>,
@@ -126,6 +128,7 @@ impl Player {
             gpu_layers: Vec::new(),
             gpu_bg: None,
             gpu_canvas: None,
+            fonts: sc_raster::fonts::generation(),
             canvas_size: (0, 0),
             canvas_tex: None,
             dirty: true,
@@ -243,7 +246,17 @@ impl Player {
         if self.template.as_ref() != Some(template) {
             self.apply_template(template);
         }
-        if let Some(r) = self.raster.poll() {
+        let fonts = sc_raster::fonts::generation();
+        if self.fonts != fonts {
+            // Подключён шрифт: текст мог быть нарисован запасным — растры слоёв считаются заново.
+            self.fonts = fonts;
+            self.ready = None;
+            self.requested = None;
+            self.gpu_layers.clear();
+            self.sync_art(template);
+            self.dirty = true;
+        }
+        if let Some(r) = self.raster.poll().filter(|r| r.fonts == fonts) {
             self.ready = Some(r);
             self.sync_art(template);
             self.dirty = true;

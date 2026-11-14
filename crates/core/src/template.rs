@@ -208,6 +208,26 @@ impl Layer {
     }
 }
 
+/// Где интерфейс YouTube Shorts перекрывает кадр (в долях холста 9:16, приблизительно — по скриншотам
+/// приложения на телефоне): сверху — поиск и меню, снизу — канал, подпись и звук, справа — кнопки реакций.
+pub const SHORTS_UNSAFE_ZONES: [Rect; 3] = [
+    Rect::new(0.0, 0.0, 1.0, 0.12),
+    Rect::new(0.0, 0.78, 1.0, 0.22),
+    Rect::new(0.86, 0.42, 0.14, 0.36),
+];
+
+impl Layer {
+    /// Слой с содержимым, которое интерфейс Shorts не должен закрывать (текст, картинки, капсула, баннер),
+    /// заходит в [`SHORTS_UNSAFE_ZONES`]. Видео и фигуры-подложки на весь кадр — не в счёт.
+    pub fn in_unsafe_zone(&self) -> bool {
+        if matches!(self, Layer::MainVideo { .. } | Layer::Shape { .. }) {
+            return false;
+        }
+        let r = self.rect();
+        SHORTS_UNSAFE_ZONES.iter().any(|z| r.intersects(z))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum TemplateError {
     #[error("размер холста {0}×{1} должен быть чётным и не меньше 16")]
@@ -536,6 +556,26 @@ mod tests {
         assert!(matches!(&r.layers[1], Layer::Capsule { text, .. } if text == "Часть 3"));
         assert_eq!(r.layers[2], text("Про *bash* — 3/{x}"));
         assert_eq!(r.layers[0], t.layers[0]);
+    }
+
+    #[test]
+    fn unsafe_zones() {
+        let capsule = |y: f32| Layer::Capsule {
+            rect: Rect::new(0.25, y, 0.5, 0.05),
+            logo: None,
+            text: String::new(),
+            font: "Sans".into(),
+            text_color: Color::WHITE,
+            fill: Color::BLACK,
+        };
+        assert!(capsule(0.05).in_unsafe_zone());
+        assert!(!capsule(0.2).in_unsafe_zone());
+        assert!(capsule(0.75).in_unsafe_zone(), "задевает нижнюю зону");
+        // видео на весь кадр — не предупреждение
+        assert!(!Layer::MainVideo { crop: Rect::FULL, dest: Rect::FULL, corner_radius: 0.0, border: None, shadow: None }.in_unsafe_zone());
+        // кнопки справа
+        assert!(Layer::BannerSlot { rect: Rect::new(0.7, 0.5, 0.2, 0.1) }.in_unsafe_zone());
+        assert!(!Layer::BannerSlot { rect: Rect::new(0.05, 0.5, 0.8, 0.1) }.in_unsafe_zone());
     }
 
     #[test]

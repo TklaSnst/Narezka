@@ -57,6 +57,19 @@ impl Rect {
         Rect::new(self.x + (self.w - w) / 2.0, self.y + (self.h - h) / 2.0, w, h)
     }
 
+    /// Пересекаются ли по площади (касание краями — нет).
+    pub fn intersects(&self, o: &Rect) -> bool {
+        self.x < o.x + o.w && o.x < self.x + self.w && self.y < o.y + o.h && o.y < self.y + self.h
+    }
+
+    pub fn right(&self) -> f32 {
+        self.x + self.w
+    }
+
+    pub fn bottom(&self) -> f32 {
+        self.y + self.h
+    }
+
     /// В пикселях для области `width`×`height`, округлено до чётных (требование yuv420).
     pub fn to_pixels_even(&self, width: u32, height: u32) -> (u32, u32, u32, u32) {
         let even = |v: f32| ((v / 2.0).round() as u32) * 2;

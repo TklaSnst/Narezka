@@ -18,5 +18,5 @@ pub use settings::{AnalysisSettings, Language, Settings};
 pub use template::{
     Align, AccentMode, Background, Border, Canvas, Layer, Outline, Paint, Shadow, Template, TemplateError, TextVars,
     VAlign,
-    background_crop, gradient_t, main_video_crop, main_video_crop_px,
+    SHORTS_UNSAFE_ZONES, background_crop, gradient_t, main_video_crop, main_video_crop_px,
 };

@@ -2,11 +2,14 @@
 
 mod analysis;
 mod cut;
+mod design;
+mod editor;
 mod export;
 mod fmt;
 mod import;
 mod jobs;
 mod player;
+mod raster_worker;
 mod timeline;
 
 use eframe::{egui, glow};
@@ -16,6 +19,7 @@ use sc_media::{Capabilities, EncoderKind};
 
 use analysis::AnalysisState;
 use cut::CutState;
+use design::DesignState;
 use export::ExportState;
 use jobs::{Jobs, Msg};
 use player::Player;
@@ -62,6 +66,7 @@ struct App {
     player: Option<Player>,
     player_error: Option<String>,
     cut: CutState,
+    design: DesignState,
     export: ExportState,
     analysis: AnalysisState,
 }
@@ -96,6 +101,7 @@ impl App {
             player,
             player_error,
             cut: CutState::default(),
+            design: DesignState::default(),
             export: ExportState::default(),
         }
     }
@@ -115,6 +121,7 @@ impl App {
                 Msg::Analysis(ev) => self.on_analysis(ev),
                 Msg::Download(ev) => self.on_download(ev),
                 Msg::PickedModel(file) => self.on_picked_model(file),
+                Msg::PickedFile(target, file) => self.on_picked_file(target, file),
             }
         }
         self.pump_analysis();
@@ -230,8 +237,8 @@ impl eframe::App for App {
         self.handle_drop(&ui.ctx().clone());
         self.cut_sync();
         if let Some(p) = &mut self.player {
-            // Превью играет только на своей вкладке.
-            if self.tab != Tab::Cut {
+            // Превью играет только на вкладках с ним.
+            if !matches!(self.tab, Tab::Cut | Tab::Design) {
                 p.set_paused(true);
             }
             // Подстановки — по выбранному шортсу (без выбора: «Часть 1», пустой заголовок).
@@ -281,6 +288,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
             Tab::Import => self.import_ui(ui),
             Tab::Cut => self.cut_ui(ui),
+            Tab::Design => self.design_ui(ui),
             Tab::Export => self.export_ui(ui),
             Tab::Settings => self.settings_ui(ui),
             _ => {

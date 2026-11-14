@@ -153,6 +153,15 @@ pub fn background(bg: &Background, canvas: Canvas) -> Result<Option<Bitmap>, Ras
     }
 }
 
+/// Слой без полей, от которых его растр не зависит (кроп видео): равные ключи — одинаковые растры.
+pub fn raster_key(layer: &Layer) -> Layer {
+    let mut key = layer.clone();
+    if let Layer::MainVideo { crop, .. } = &mut key {
+        *crop = Rect::FULL;
+    }
+    key
+}
+
 pub fn layer(layer: &Layer, canvas: Canvas) -> Result<LayerArt, RasterError> {
     let cw = canvas.width as f32;
     Ok(match layer {

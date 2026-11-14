@@ -8,7 +8,7 @@ pub mod gl;
 pub mod quad;
 
 use sc_core::{Background, Layer, Rect, Template, background_crop, main_video_crop_px};
-use sc_raster::{Art, Bitmap, Sprite, video_rect_px};
+use sc_raster::{Bitmap, LayerArt, Sprite, video_rect_px};
 
 pub use gl::{Blur, BlurParams, Target};
 use quad::{Quad, QuadParams};
@@ -27,11 +27,28 @@ struct GpuSprite {
     h: u32,
 }
 
+/// Растры одного слоя на GPU и прямоугольник, для которого они нарисованы.
+struct GpuLayer {
+    rect: Rect,
+    below: Option<GpuSprite>,
+    above: Option<GpuSprite>,
+}
+
 #[derive(Default)]
 struct GpuArt {
     background: Option<GpuSprite>,
-    /// (под слоем, над слоем) по слоям шаблона.
-    layers: Vec<(Option<GpuSprite>, Option<GpuSprite>)>,
+    /// По слоям шаблона; `None` — растра нет (ещё не готов).
+    layers: Vec<Option<GpuLayer>>,
+}
+
+/// Что положить на место слоя в [`Compositor::set_layers`].
+pub enum ArtSlot<'a> {
+    /// Ничего (растр ещё не готов).
+    Empty,
+    /// Текстуры слоя с этим индексом из прошлого вызова (без повторной загрузки).
+    Keep(usize),
+    /// Загрузить растры, нарисованные для прямоугольника `Rect`.
+    Upload(Rect, &'a LayerArt),
 }
 
 pub struct Compositor {
@@ -165,24 +182,51 @@ impl Compositor {
         Ok(())
     }
 
-    /// Загрузить растры шаблона (после его изменения). Старые текстуры освобождаются.
+    /// Растр фона (градиент, картинка); `None` — фон без растра.
     ///
     /// # Safety
     /// GL-контекст должен быть текущим.
-    pub unsafe fn set_art(&mut self, gl: &glow::Context, art: &Art) -> Result<(), String> {
+    pub unsafe fn set_background_art(&mut self, gl: &glow::Context, bg: Option<&Bitmap>) -> Result<(), String> {
+        use glow::HasContext;
         unsafe {
-            self.delete_art(gl);
-            let sprite = |s: &Option<Sprite>| -> Result<Option<GpuSprite>, String> {
-                s.as_ref().map(|s| upload(gl, &s.bitmap, s.x, s.y)).transpose()
-            };
-            self.art.background = art.background.as_ref().map(|b| upload(gl, b, 0, 0)).transpose()?;
-            for l in &art.layers {
-                let below = sprite(&l.below)?;
-                let above = sprite(&l.above)?;
-                self.art.layers.push((below, above));
+            if let Some(s) = self.art.background.take() {
+                gl.delete_texture(s.tex);
             }
+            self.art.background = bg.map(|b| upload(gl, b, 0, 0)).transpose()?;
         }
         Ok(())
+    }
+
+    /// Растры слоёв в порядке шаблона. Текстуры прошлых слоёв, не попавшие в `Keep`, освобождаются.
+    /// Растр, нарисованный для другого прямоугольника, чем у слоя сейчас, растягивается на новый —
+    /// пока свежий растр готовится (перетаскивание мышью).
+    ///
+    /// # Safety
+    /// GL-контекст должен быть текущим.
+    pub unsafe fn set_layers(&mut self, gl: &glow::Context, slots: &[ArtSlot]) -> Result<(), String> {
+        let mut old: Vec<Option<GpuLayer>> = std::mem::take(&mut self.art.layers);
+        let mut result = Ok(());
+        for slot in slots {
+            let layer = match slot {
+                ArtSlot::Empty => None,
+                ArtSlot::Keep(i) => old.get_mut(*i).and_then(Option::take),
+                ArtSlot::Upload(rect, art) => {
+                    let sprite = |s: &Option<Sprite>| -> Result<Option<GpuSprite>, String> {
+                        s.as_ref().map(|s| unsafe { upload(gl, &s.bitmap, s.x, s.y) }).transpose()
+                    };
+                    match sprite(&art.below).and_then(|b| Ok((b, sprite(&art.above)?))) {
+                        Ok((below, above)) => Some(GpuLayer { rect: *rect, below, above }),
+                        Err(e) => {
+                            result = Err(e);
+                            None
+                        }
+                    }
+                }
+            };
+            self.art.layers.push(layer);
+        }
+        unsafe { delete_layers(gl, old) };
+        result
     }
 
     /// Собрать холст в текстуру `w`×`h` пикселей (размер на экране). Возвращает текстуру и `true`,
@@ -212,11 +256,20 @@ impl Compositor {
         let draw = |tex, dest, uv, radius_px, dim| unsafe {
             q.draw(gl, tex, w, h, &QuadParams { dest, uv, radius_px, dim });
         };
-        let sprite = |s: &Option<GpuSprite>| {
-            if let Some(s) = s {
-                draw(s.tex, px(s.x as f32, s.y as f32, s.w as f32, s.h as f32), full, 0.0, 1.0);
+        // `map` — растр нарисован для прямоугольника `from`, а слой сейчас в `to` (в пикселях холста).
+        let sprite_mapped = |s: &Option<GpuSprite>, map: Option<(Rect, Rect)>| {
+            let Some(s) = s else { return };
+            let (mut x, mut y, mut sw, mut sh) = (s.x as f32, s.y as f32, s.w as f32, s.h as f32);
+            if let Some((from, to)) = map {
+                let (kx, ky) = (to.w / from.w, to.h / from.h);
+                x = to.x + (x - from.x) * kx;
+                y = to.y + (y - from.y) * ky;
+                sw *= kx;
+                sh *= ky;
             }
+            draw(s.tex, px(x, y, sw, sh), full, 0.0, 1.0);
         };
+        let sprite = |s: &Option<GpuSprite>| sprite_mapped(s, None);
 
         unsafe {
             self.quad.begin(gl, target.fbo, w, h);
@@ -245,8 +298,13 @@ impl Compositor {
 
         let scale = w as f32 / cw;
         for (i, layer) in template.layers.iter().enumerate() {
-            let (below, above) = self.art.layers.get(i).map_or((&None, &None), |(b, a)| (b, a));
-            sprite(below);
+            let art = self.art.layers.get(i).and_then(Option::as_ref);
+            let map = art.filter(|a| a.rect != layer.rect() && a.rect.w > 0.0 && a.rect.h > 0.0).map(|a| {
+                let to_px = |r: Rect| Rect::new(r.x * cw, r.y * ch, r.w * cw, r.h * ch);
+                (to_px(a.rect), to_px(layer.rect()))
+            });
+            let (below, above) = art.map_or((&None, &None), |a| (&a.below, &a.above));
+            sprite_mapped(below, map);
             if let (Layer::MainVideo { crop, dest, corner_radius, .. }, Some(video), Some(src)) =
                 (layer, &self.video, self.src_size())
             {
@@ -256,7 +314,7 @@ impl Compositor {
                 let (dx, dy, dw, dh) = video_rect_px(*dest, canvas);
                 draw(video.tex, px(dx as f32, dy as f32, dw as f32, dh as f32), uv, corner_radius * cw * scale, 1.0);
             }
-            sprite(above);
+            sprite_mapped(above, map);
         }
         unsafe { self.quad.end(gl) };
         Ok((target.tex, recreated))
@@ -268,11 +326,9 @@ impl Compositor {
     }
 
     unsafe fn delete_art(&mut self, gl: &glow::Context) {
-        use glow::HasContext;
-        let art = std::mem::take(&mut self.art);
-        let all = art.background.into_iter().chain(art.layers.into_iter().flat_map(|(b, a)| [b, a]).flatten());
-        for s in all {
-            unsafe { gl.delete_texture(s.tex) };
+        unsafe {
+            let _ = self.set_background_art(gl, None);
+            delete_layers(gl, std::mem::take(&mut self.art.layers));
         }
     }
 
@@ -289,6 +345,15 @@ impl Compositor {
             self.blur.delete(gl);
             self.quad.delete(gl);
         }
+    }
+}
+
+/// # Safety
+/// GL-контекст должен быть текущим.
+unsafe fn delete_layers(gl: &glow::Context, layers: Vec<Option<GpuLayer>>) {
+    use glow::HasContext;
+    for s in layers.into_iter().flatten().flat_map(|l| [l.below, l.above]).flatten() {
+        unsafe { gl.delete_texture(s.tex) };
     }
 }
 

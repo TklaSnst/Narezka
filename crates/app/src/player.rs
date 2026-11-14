@@ -11,10 +11,11 @@ use std::sync::Arc;
 use eframe::egui;
 use eframe::glow;
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-use sc_compositor::Compositor;
-use sc_core::{Background, Layer, Template};
+use sc_compositor::{ArtSlot, Compositor};
+use sc_core::{Background, Canvas, Layer, Template};
 use sc_mpv::{Event, Format, GetProcAddress, Mpv, Prop};
-use sc_raster::{Art, LayerArt};
+
+use crate::raster_worker::{RasterWorker, Rastered};
 
 /// Последние известные значения свойств mpv.
 #[derive(Debug, Clone, Default)]
@@ -48,10 +49,18 @@ pub struct Player {
     loaded: Option<PathBuf>,
     /// Петля воспроизведения [начало, конец) — выбранный шортс.
     range: Option<(f64, f64)>,
-    /// Шаблон, по которому растрированы слои (растры пересчитываются при его изменении).
+    /// Шаблон, по которому собирается холст.
     template: Option<Template>,
-    /// Растры слоёв прошлого шаблона: неизменённые слои не растрируются заново.
-    layer_art: Vec<(Layer, LayerArt)>,
+    /// Растры считаются в фоне; `ready` — последний готовый результат.
+    raster: RasterWorker,
+    ready: Option<Rastered>,
+    /// Последний отправленный на растеризацию шаблон.
+    requested: Option<Template>,
+    /// Для каких слоёв (ключ `raster_key`) нарисованы растры, лежащие в композиторе, по слоям шаблона;
+    /// ключ может быть устаревшим — тогда композитор растягивает старый растр, пока не готов новый.
+    gpu_layers: Vec<Option<Layer>>,
+    gpu_bg: Option<Background>,
+    gpu_canvas: Option<Canvas>,
     /// Размер холста на экране в пикселях (из прошлого кадра UI).
     canvas_size: (u32, u32),
     canvas_tex: Option<egui::TextureId>,
@@ -111,7 +120,12 @@ impl Player {
             loaded: None,
             range: None,
             template: None,
-            layer_art: Vec::new(),
+            raster: RasterWorker::new(cc.egui_ctx.clone()),
+            ready: None,
+            requested: None,
+            gpu_layers: Vec::new(),
+            gpu_bg: None,
+            gpu_canvas: None,
             canvas_size: (0, 0),
             canvas_tex: None,
             dirty: true,
@@ -229,6 +243,11 @@ impl Player {
         if self.template.as_ref() != Some(template) {
             self.apply_template(template);
         }
+        if let Some(r) = self.raster.poll() {
+            self.ready = Some(r);
+            self.sync_art(template);
+            self.dirty = true;
+        }
         self.pump_bg();
 
         let gl = self.gl.clone();
@@ -274,37 +293,9 @@ impl Player {
 
     /// Шаблон изменился: растры слоёв, размытый фон, видео-фон.
     fn apply_template(&mut self, template: &Template) {
-        // Ошибка одного растра (нет файла картинки) не мешает остальным: превью показывает, что может.
-        let canvas = template.canvas;
-        let background = sc_raster::background(&template.background, canvas).unwrap_or_else(|e| {
-            log::error!("фон шаблона: {e}");
-            None
-        });
-        let same_canvas = self.template.as_ref().is_some_and(|t| t.canvas == canvas);
-        let layer_art: Vec<(Layer, LayerArt)> = template
-            .layers
-            .iter()
-            .map(|l| {
-                let cached = self.layer_art.iter().find(|(old, _)| same_canvas && old == l);
-                let art = match cached {
-                    Some((_, a)) => a.clone(),
-                    None => sc_raster::layer(l, canvas).unwrap_or_else(|e| {
-                        log::error!("слой шаблона: {e}");
-                        Default::default()
-                    }),
-                };
-                (l.clone(), art)
-            })
-            .collect();
-        let art = Art { background, layers: layer_art.iter().map(|(_, a)| a.clone()).collect() };
-        self.layer_art = layer_art;
-        unsafe {
-            if let Err(e) = self.comp.set_art(&self.gl, &art) {
-                log::error!("растры шаблона: {e}");
-            }
-            if let Err(e) = self.comp.refresh_background(&self.gl, template) {
-                log::error!("фон превью: {e}");
-            }
+        self.sync_art(template);
+        if let Err(e) = unsafe { self.comp.refresh_background(&self.gl, template) } {
+            log::error!("фон превью: {e}");
         }
 
         let bg_path = match &template.background {
@@ -319,6 +310,67 @@ impl Player {
         }
         self.template = Some(template.clone());
         self.dirty = true;
+    }
+
+    /// Растры в композиторе — под слои `template`: готовые остаются, свежие из фонового потока загружаются,
+    /// для остальных растягивается прошлый растр того же слоя; чего не хватает — запрашивается в фоне.
+    fn sync_art(&mut self, template: &Template) {
+        let canvas = template.canvas;
+        if self.gpu_canvas != Some(canvas) {
+            // Растры другого размера холста не годятся даже растянутыми.
+            self.gpu_layers.clear();
+            self.gpu_bg = None;
+            self.gpu_canvas = Some(canvas);
+        }
+        let ready = self.ready.as_ref();
+        if self.gpu_bg.as_ref() != Some(&template.background)
+            && let Some(bitmap) = ready.and_then(|r| r.background(canvas, &template.background))
+        {
+            if let Err(e) = unsafe { self.comp.set_background_art(&self.gl, bitmap) } {
+                log::error!("растр фона: {e}");
+            }
+            self.gpu_bg = Some(template.background.clone());
+        }
+
+        let keys: Vec<Layer> = template.layers.iter().map(sc_raster::raster_key).collect();
+        let old = &self.gpu_layers;
+        let mut used = vec![false; old.len()];
+        let mut slots = Vec::with_capacity(keys.len());
+        let mut gpu: Vec<Option<Layer>> = Vec::with_capacity(keys.len());
+        for k in &keys {
+            if let Some(j) = (0..old.len()).find(|&j| !used[j] && old[j].as_ref() == Some(k)) {
+                used[j] = true;
+                slots.push(ArtSlot::Keep(j));
+                gpu.push(Some(k.clone()));
+            } else if let Some(art) = ready.and_then(|r| r.layer(canvas, k)) {
+                slots.push(ArtSlot::Upload(k.rect(), art));
+                gpu.push(Some(k.clone()));
+            } else {
+                slots.push(ArtSlot::Empty);
+                gpu.push(None);
+            }
+        }
+        // Слой, который сейчас двигают: старый растр на том же месте в списке, растянутый на новый прямоугольник.
+        for (i, slot) in slots.iter_mut().enumerate() {
+            if gpu[i].is_none()
+                && let Some(Some(prev)) = old.get(i)
+                && !used[i]
+                && std::mem::discriminant(prev) == std::mem::discriminant(&keys[i])
+            {
+                used[i] = true;
+                *slot = ArtSlot::Keep(i);
+                gpu[i] = Some(prev.clone());
+            }
+        }
+        if let Err(e) = unsafe { self.comp.set_layers(&self.gl, &slots) } {
+            log::error!("растры шаблона: {e}");
+        }
+        let complete = gpu.iter().zip(&keys).all(|(g, k)| g.as_ref() == Some(k)) && self.gpu_bg.as_ref() == Some(&template.background);
+        self.gpu_layers = gpu;
+        if !complete && self.requested.as_ref() != Some(template) {
+            self.raster.request(template.clone());
+            self.requested = Some(template.clone());
+        }
     }
 
     fn open_bg(&self, path: PathBuf) -> Option<BgVideo> {

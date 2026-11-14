@@ -133,7 +133,7 @@ impl App {
             }
         }
         if self.cut.source.is_none()
-            && self.tab == crate::Tab::Cut
+            && matches!(self.tab, crate::Tab::Cut | crate::Tab::Design)
             && let Some(id) = self.batch.sources.iter().find(|s| playable(&s.status)).map(|s| s.id)
         {
             self.select_source(id);
@@ -155,7 +155,7 @@ impl App {
     }
 
     /// Выбрать шортс: курсор — в его начало, воспроизведение — по кругу внутри него.
-    fn select_short(&mut self, id: Option<ShortId>) {
+    pub(crate) fn select_short(&mut self, id: Option<ShortId>) {
         self.cut.selected = id;
         self.cut.scroll_to_selected = true;
         let Some(p) = &mut self.player else { return };
@@ -840,7 +840,7 @@ impl App {
 }
 
 /// Холст 9:16 по шаблону, собранный композитором; размер на экране сообщается плееру.
-fn preview_canvas(ui: &egui::Ui, area: Rect, player: &mut Player, template: &Template, empty_text: &str) {
+pub(crate) fn preview_canvas(ui: &egui::Ui, area: Rect, player: &mut Player, template: &Template, empty_text: &str) -> Rect {
     let (cw, ch) = (template.canvas.width as f32, template.canvas.height as f32);
     let mut size = Vec2::new(area.height() * cw / ch, area.height());
     if size.x > area.width() {
@@ -864,6 +864,7 @@ fn preview_canvas(ui: &egui::Ui, area: Rect, player: &mut Player, template: &Tem
         }
     }
     ui.painter().rect_stroke(canvas, 0.0, egui::Stroke::new(1.0, Color32::from_gray(70)), egui::StrokeKind::Outside);
+    canvas
 }
 
 #[cfg(test)]

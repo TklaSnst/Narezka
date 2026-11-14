@@ -9,6 +9,7 @@ use sc_core::{MediaInfo, SourceId};
 use sc_media::{Capabilities, MediaError};
 
 use crate::analysis::{AnalysisEvent, DownloadEvent};
+use crate::design::FileTarget;
 use crate::export::RenderEvent;
 
 pub enum Msg {
@@ -24,6 +25,8 @@ pub enum Msg {
     Download(DownloadEvent),
     /// Файл модели whisper из диалога; `None` — диалог закрыт без выбора.
     PickedModel(Option<PathBuf>),
+    /// Картинка или видео для шаблона из диалога; `None` — диалог закрыт без выбора.
+    PickedFile(FileTarget, Option<PathBuf>),
 }
 
 /// Отправитель для долгих задач, которые шлют несколько сообщений (рендер, анализ, загрузка).

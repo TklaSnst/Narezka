@@ -4,6 +4,7 @@
 
 pub mod batch;
 pub mod geometry;
+pub mod library;
 pub mod paths;
 pub mod settings;
 pub mod template;
@@ -13,6 +14,7 @@ pub use batch::{
     MIN_SPLIT, Short, ShortFlag, ShortId, ShortStatus, Source, SourceId, SourceStatus, TimeRange,
 };
 pub use geometry::{Color, Rect, rounded_rect_coverage};
+pub use library::{LibraryError, TemplateRef, UserTemplate, UserTemplates};
 pub use paths::Paths;
 pub use settings::{AnalysisSettings, Language, Settings};
 pub use template::{

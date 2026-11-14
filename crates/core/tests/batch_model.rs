@@ -170,3 +170,21 @@ fn part_number_counts_accepted_of_same_source() {
     assert_eq!(b.part_number(second), 2);
     assert_eq!(b.part_number(elsewhere), 1);
 }
+
+#[test]
+fn short_template_overrides_batch() {
+    let (mut b, src) = batch_with_source(100.0);
+    assert_eq!(b.template_ref, Some(sc_core::TemplateRef::Builtin(sc_core::library::DEFAULT_BUILTIN.into())));
+    let a = b.add_short(Short::manual(src, 10.0, 40.0)).unwrap();
+    assert_eq!(b.template_for(a), &b.template, "без правок — шаблон пачки");
+
+    let own = sc_core::library::builtin("split").unwrap();
+    b.short_mut(a).unwrap().template = Some(own.clone());
+    assert_eq!(b.template_for(a), &own);
+    // Правки едут в обе половины при разделении.
+    let second = b.split_short(a, 25.0).unwrap();
+    assert_eq!(b.template_for(second), &own);
+    // И переживают сериализацию.
+    let json = serde_json::to_string(&b).unwrap();
+    assert_eq!(serde_json::from_str::<Batch>(&json).unwrap(), b);
+}

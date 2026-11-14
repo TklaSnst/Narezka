@@ -1,0 +1,18 @@
+# Полный кроп — по montana-channel-grid.jpg: середина исходника на весь кадр, подпись белым с обводкой.
+name = "full-crop"
+background = { type = "color", color = "#000000" }
+
+[[layers]]
+type = "main_video"
+crop = { x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
+dest = { x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
+
+[[layers]]
+type = "text"
+rect = { x = 0.06, y = 0.6, w = 0.8, h = 0.16 }
+content = "{title}"
+font = "Montserrat ExtraBold"
+size = 0.065
+color = "#ffffff"
+accent_color = "#ffd60a"
+outline = { width = 0.005, color = "#000000" }

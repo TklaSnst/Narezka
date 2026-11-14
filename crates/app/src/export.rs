@@ -77,7 +77,7 @@ impl App {
                     has_audio: info.has_audio,
                     start: short.start,
                     end: short.end,
-                    template: batch.template.with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() }),
+                    template: batch.template_for(id).with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() }),
                     output: batch.output.clone(),
                     encoder: encoder.clone(),
                     dest,

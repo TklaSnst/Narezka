@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::library::{self, DEFAULT_BUILTIN, TemplateRef};
 use crate::template::{Canvas, Template};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -148,6 +149,9 @@ pub struct Short {
     /// Предложен анализом (повторная нарезка заменяет такие шортсы, кроме принятых).
     #[serde(default)]
     pub auto: bool,
+    /// Локальные правки: свой шаблон шортса вместо шаблона пачки.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<Template>,
 }
 
 impl Short {
@@ -165,6 +169,7 @@ impl Short {
             keywords: Vec::new(),
             flags: Vec::new(),
             auto: false,
+            template: None,
         }
     }
 
@@ -294,6 +299,9 @@ pub struct Batch {
     #[serde(default)]
     pub shorts: Vec<Short>,
     pub template: Template,
+    /// Из какого шаблона библиотеки взят `template` (`None` — ниоткуда, например из `SC_TEMPLATE`).
+    #[serde(default)]
+    pub template_ref: Option<TemplateRef>,
     #[serde(default)]
     pub output: OutputSettings,
     /// Разрешить принятым шортсам перекрываться (SPEC §2: по умолчанию нельзя).
@@ -309,7 +317,8 @@ impl Default for Batch {
         Self {
             sources: Vec::new(),
             shorts: Vec::new(),
-            template: Template::minimal(),
+            template: library::builtin(DEFAULT_BUILTIN).expect("шаблон по умолчанию встроен"),
+            template_ref: Some(TemplateRef::Builtin(DEFAULT_BUILTIN.into())),
             output: OutputSettings::default(),
             allow_overlap: false,
         }
@@ -327,6 +336,15 @@ impl Batch {
 
     pub fn short(&self, id: ShortId) -> Option<&Short> {
         self.shorts.iter().find(|s| s.id == id)
+    }
+
+    pub fn short_mut(&mut self, id: ShortId) -> Option<&mut Short> {
+        self.shorts.iter_mut().find(|s| s.id == id)
+    }
+
+    /// Шаблон, по которому рендерится шортс: его локальный, если есть, иначе шаблон пачки.
+    pub fn template_for(&self, id: ShortId) -> &Template {
+        self.short(id).and_then(|s| s.template.as_ref()).unwrap_or(&self.template)
     }
 
     /// Добавляет исходник; повторное добавление того же пути возвращает существующий id.

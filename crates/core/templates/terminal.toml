@@ -1,0 +1,24 @@
+# Terminal — по hrenn-short-4000.jpg: исходник во всю ширину на трети высоты, сверху — размытая копия,
+# снизу — переход в чёрный и место под баннер.
+name = "terminal"
+background = { type = "blur", darken = 0.45, scale = 1.4 }
+
+[[layers]]
+type = "shape"
+rect = { x = 0.0, y = 0.6, w = 1.0, h = 0.12 }
+paint = { type = "linear", from = "#00000000", to = "#000000", angle = 0 }
+
+[[layers]]
+type = "shape"
+rect = { x = 0.0, y = 0.72, w = 1.0, h = 0.28 }
+paint = { type = "solid", color = "#000000" }
+
+[[layers]]
+type = "main_video"
+crop = { x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
+dest = { x = 0.0, y = 0.33, w = 1.0, h = 0.3164 }
+shadow = { color = "#000000c0", blur = 0.03 }
+
+[[layers]]
+type = "banner_slot"
+rect = { x = 0.04, y = 0.69, w = 0.8, h = 0.08 }

@@ -36,9 +36,11 @@ pub struct TextStyle<'a> {
     pub outline: Option<(f32, Color)>,
     pub align: Align,
     pub valign: VAlign,
+    /// Переносить по словам; без переноса — одна строка (переводы строк в тексте остаются), не влезает — ужимается.
+    pub wrap: bool,
 }
 
-/// Рисует текст в прямоугольник `(x, y, w, h)` пиксмапа: перенос по словам, выравнивание,
+/// Рисует текст в прямоугольник `(x, y, w, h)` пиксмапа: перенос по словам (если `wrap`), выравнивание,
 /// при нехватке места — уменьшение кегля. Возвращает итоговый кегль.
 pub fn draw_text(pm: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), content: &str, style: &TextStyle) -> f32 {
     let spans = parse_accent(content);
@@ -58,7 +60,7 @@ pub fn draw_text(pm: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), content: &
     let mut size = style.size;
     let (buf, lines) = loop {
         let mut buf = Buffer::new(system, Metrics::new(size, size * LINE_HEIGHT));
-        buf.set_wrap(Wrap::Word);
+        buf.set_wrap(if style.wrap { Wrap::Word } else { Wrap::None });
         buf.set_size(Some(w), None);
         let rich = spans.iter().map(|(t, accent)| (t.as_str(), attrs.clone().metadata(usize::from(*accent))));
         buf.set_rich_text(rich, &attrs, Shaping::Advanced, align);
@@ -214,5 +216,31 @@ mod tests {
         assert_eq!(parse_accent("5 * 3"), s(&[("5 * 3", false)]));
         assert_eq!(parse_accent("*a* b * c"), s(&[("a", true), (" b * c", false)]));
         assert_eq!(parse_accent(""), s(&[]));
+    }
+
+    #[test]
+    fn single_line_shrinks_instead_of_wrapping() {
+        let draw = |wrap: bool| {
+            let mut pm = Pixmap::new(400, 60).unwrap();
+            let style = TextStyle {
+                font: "Press Start 2P",
+                size: 30.0,
+                color: Color::WHITE,
+                accent_color: Color::WHITE,
+                accent_mode: AccentMode::Color,
+                outline: None,
+                align: Align::Center,
+                valign: VAlign::Center,
+                wrap,
+            };
+            let size = draw_text(&mut pm, (0.0, 0.0, 400.0, 60.0), "Часть 12 · Длинная подпись", &style);
+            let rows: Vec<usize> = pm.data().chunks(4).enumerate().filter(|(_, p)| p[3] > 0).map(|(i, _)| i / 400).collect();
+            (size, rows.iter().max().unwrap() - rows.iter().min().unwrap())
+        };
+        let (wrapped, wrapped_h) = draw(true);
+        let (single, single_h) = draw(false);
+        assert!(single < wrapped, "одна строка мельче: {single} vs {wrapped}");
+        assert!((single_h as f32) < single * 1.2, "одна строка по высоте: {single_h} при кегле {single}");
+        assert!(wrapped_h as f32 > wrapped * 1.2, "с переносом — две строки: {wrapped_h} при кегле {wrapped}");
     }
 }

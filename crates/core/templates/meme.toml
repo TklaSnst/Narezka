@@ -1,0 +1,18 @@
+# Мем-плашка — по montana-channel-grid.jpg: белая плашка с чёрным заголовком сверху, видео под ней до низа.
+name = "meme"
+background = { type = "color", color = "#ffffff" }
+
+[[layers]]
+type = "main_video"
+crop = { x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
+dest = { x = 0.0, y = 0.3, w = 1.0, h = 0.7 }
+
+[[layers]]
+type = "text"
+rect = { x = 0.05, y = 0.13, w = 0.9, h = 0.16 }
+content = "{title}"
+font = "Montserrat Bold"
+size = 0.062
+color = "#000000"
+accent_color = "#e0302a"
+valign = "bottom"

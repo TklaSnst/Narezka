@@ -10,10 +10,11 @@ mod import;
 mod jobs;
 mod player;
 mod raster_worker;
+mod templates;
 mod timeline;
 
 use eframe::{egui, glow};
-use sc_core::{Batch, Language, Paths, Settings, TextVars};
+use sc_core::{Batch, Language, Paths, Settings, UserTemplates};
 use sc_i18n::I18n;
 use sc_media::{Capabilities, EncoderKind};
 
@@ -23,6 +24,7 @@ use design::DesignState;
 use export::ExportState;
 use jobs::{Jobs, Msg};
 use player::Player;
+use templates::Library;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -69,6 +71,8 @@ struct App {
     design: DesignState,
     export: ExportState,
     analysis: AnalysisState,
+    /// Свои шаблоны пользователя.
+    templates: Library,
 }
 
 impl App {
@@ -76,6 +80,7 @@ impl App {
         let mut batch = Batch { output: settings.output.clone(), ..Default::default() };
         if let Some(t) = dev_template() {
             batch.template = t;
+            batch.template_ref = None;
         }
         let jobs = Jobs::new(cc.egui_ctx.clone());
         let (player, player_error) = match Player::new(cc) {
@@ -89,6 +94,7 @@ impl App {
         Self {
             i18n: I18n::new(settings.language),
             analysis: AnalysisState::new(&settings),
+            templates: Library::new(UserTemplates::new(paths.templates_dir())),
             paths,
             settings,
             batch,
@@ -236,17 +242,15 @@ impl eframe::App for App {
         self.poll_jobs();
         self.handle_drop(&ui.ctx().clone());
         self.cut_sync();
-        if let Some(p) = &mut self.player {
+        self.design_sync_target();
+        // Подстановки — по выбранному шортсу; шаблон — его (или тот, что правится на «Оформлении»).
+        let template = self.player.is_some().then(|| self.preview_template(self.tab == Tab::Design).with_vars(&templates::preview_vars(self)));
+        if let (Some(p), Some(template)) = (&mut self.player, template) {
             // Превью играет только на вкладках с ним.
             if !matches!(self.tab, Tab::Cut | Tab::Design) {
                 p.set_paused(true);
             }
-            // Подстановки — по выбранному шортсу (без выбора: «Часть 1», пустой заголовок).
-            let vars = match self.cut.selected.and_then(|id| self.batch.short(id)) {
-                Some(s) => TextVars { part: self.batch.part_number(s.id), title: s.title.clone() },
-                None => TextVars { part: 1, title: String::new() },
-            };
-            p.pump(frame, &self.batch.template.with_vars(&vars));
+            p.pump(frame, &template);
         }
         // Ctrl+1…6 — вкладки по порядку.
         let digits = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6];
@@ -308,7 +312,7 @@ impl eframe::App for App {
     }
 }
 
-/// Шаблон из файла `SC_TEMPLATE` (для разработки, пока нет выбора шаблонов в интерфейсе — шаг 3.5).
+/// Шаблон из файла `SC_TEMPLATE` — для разработки (подменяет шаблон пачки при запуске).
 fn dev_template() -> Option<sc_core::Template> {
     let path = std::env::var_os("SC_TEMPLATE")?;
     let parsed = std::fs::read_to_string(&path)

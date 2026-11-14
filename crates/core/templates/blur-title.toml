@@ -1,0 +1,20 @@
+# Размытие + заголовок — по montana-blur-title.jpg: исходник по центру, размытие сверху и снизу,
+# на нижнем — пиксельный заголовок с жёсткой тенью (акцент `*…*` — красным).
+name = "blur-title"
+background = { type = "blur", darken = 0.15, scale = 1.3 }
+
+[[layers]]
+type = "main_video"
+crop = { x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
+dest = { x = 0.0, y = 0.3, w = 1.0, h = 0.3164 }
+
+[[layers]]
+type = "text"
+rect = { x = 0.04, y = 0.64, w = 0.81, h = 0.12 }
+content = "{title}"
+font = "Press Start 2P"
+size = 0.05
+color = "#ffffff"
+accent_color = "#ff3030"
+shadow = { color = "#000000", dx = 0.006, dy = 0.006 }
+valign = "top"

@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CursorIcon, Key, Pos2, Sense, Stroke, Vec2};
 use sc_core::{
-    AccentMode, Align, Background, Border, Canvas, Color, Layer, Outline, Paint, Rect, SHORTS_UNSAFE_ZONES, Shadow,
-    ShortStatus, Template, TemplateError, VAlign, main_video_crop,
+    AccentMode, Align, Background, Batch, Border, Canvas, Color, Layer, Outline, Paint, Rect, SHORTS_UNSAFE_ZONES, Shadow,
+    ShortId, ShortStatus, Template, TemplateError, TemplateRef, VAlign, main_video_crop,
 };
 use sc_i18n::I18n;
 
@@ -19,6 +19,7 @@ use crate::editor::{self, Guides, Handle, SnapOpts, Targets};
 use crate::fmt;
 use crate::import::file_name;
 use crate::jobs::Msg;
+use crate::templates::LibDialog;
 
 /// Порог привязки, пиксели экрана.
 const SNAP_PX: f32 = 6.0;
@@ -52,10 +53,16 @@ pub struct DesignState {
     zones: bool,
     /// Тянуть мышью кроп видео, а не сам слой (то же — с зажатым Alt).
     crop_mode: bool,
-    undo: Vec<Template>,
-    redo: Vec<Template>,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    /// Править локальный шаблон выбранного шортса, а не шаблон пачки.
+    pub local: bool,
+    /// Шортс, чей локальный шаблон правится сейчас (см. [`App::design_sync_target`]).
+    pub short: Option<ShortId>,
+    /// Открытый диалог библиотеки шаблонов.
+    pub(crate) dialog: Option<LibDialog>,
     /// Ключ и время последней правки — для склейки правок в один шаг отмены.
-    last_edit: Option<(String, Instant)>,
+    pub(crate) last_edit: Option<(String, Instant)>,
     guides: Guides,
     /// Ошибка последней правки — ключ i18n.
     error: Option<&'static str>,
@@ -72,11 +79,25 @@ impl Default for DesignState {
             crop_mode: false,
             undo: Vec::new(),
             redo: Vec::new(),
+            local: false,
+            short: None,
+            dialog: None,
             last_edit: None,
             guides: Guides::default(),
             error: None,
         }
     }
+}
+
+/// Состояние шаблона для отмены: шаблон пачки (с источником в библиотеке) или локальный шаблон шортса.
+pub(crate) enum Snapshot {
+    Batch(Template, Option<TemplateRef>),
+    Short(ShortId, Option<Template>),
+}
+
+/// Шаблон, который правится: локальный шортса `short` (если правок ещё нет — шаблон пачки) или шаблон пачки.
+fn edited(batch: &Batch, short: Option<ShortId>) -> &Template {
+    short.map_or(&batch.template, |id| batch.template_for(id))
 }
 
 struct Drag {
@@ -142,12 +163,14 @@ fn excerpt(s: &str, n: usize) -> String {
 }
 
 impl App {
-    /// Правка шаблона пачки: применяется, только если шаблон остаётся корректным; правки с одним `key`
-    /// подряд склеиваются в один шаг отмены.
+    /// Правка шаблона, который сейчас правится (пачки или локального шортса): применяется, только если шаблон
+    /// остаётся корректным; правки с одним `key` подряд склеиваются в один шаг отмены. Первая локальная правка
+    /// шортса начинается с копии шаблона пачки.
     fn design_edit(&mut self, key: &str, f: impl FnOnce(&mut Template)) {
-        let mut t = self.batch.template.clone();
+        let target = self.design.short;
+        let mut t = edited(&self.batch, target).clone();
         f(&mut t);
-        if t == self.batch.template {
+        if t == *edited(&self.batch, target) {
             return;
         }
         if let Err(e) = t.validate() {
@@ -156,38 +179,88 @@ impl App {
             return;
         }
         let now = Instant::now();
+        let same = matches!(&self.design.last_edit, Some((k, at)) if k == key && now.duration_since(*at) < COALESCE);
+        let next = match target {
+            Some(id) => Snapshot::Short(id, Some(t)),
+            None => Snapshot::Batch(t, self.batch.template_ref.clone()),
+        };
+        self.design_apply(next, !same);
+        self.design.last_edit = Some((key.to_owned(), now));
+    }
+
+    /// Ставит состояние шаблона (`undo` — запомнить прежнее для отмены) и сбрасывает повтор.
+    pub(crate) fn design_apply(&mut self, next: Snapshot, undo: bool) {
+        let prev = self.design_restore(next);
         let d = &mut self.design;
-        let same = matches!(&d.last_edit, Some((k, at)) if k == key && now.duration_since(*at) < COALESCE);
-        if !same {
-            d.undo.push(std::mem::replace(&mut self.batch.template, t.clone()));
+        if undo && let Some(prev) = prev {
+            d.undo.push(prev);
             if d.undo.len() > UNDO_MAX {
                 d.undo.remove(0);
             }
         }
-        d.last_edit = Some((key.to_owned(), now));
         d.redo.clear();
         d.error = None;
-        self.batch.template = t;
+    }
+
+    /// Ставит состояние и возвращает прежнее состояние той же цели (`None` — шортса уже нет).
+    fn design_restore(&mut self, snap: Snapshot) -> Option<Snapshot> {
+        match snap {
+            Snapshot::Batch(t, r) => {
+                let t = std::mem::replace(&mut self.batch.template, t);
+                let r = std::mem::replace(&mut self.batch.template_ref, r);
+                Some(Snapshot::Batch(t, r))
+            }
+            Snapshot::Short(id, t) => {
+                let s = self.batch.short_mut(id)?;
+                Some(Snapshot::Short(id, std::mem::replace(&mut s.template, t)))
+            }
+        }
     }
 
     fn design_undo(&mut self, redo: bool) {
-        let d = &mut self.design;
-        let (from, to) = if redo { (&mut d.redo, &mut d.undo) } else { (&mut d.undo, &mut d.redo) };
-        if let Some(t) = from.pop() {
-            to.push(std::mem::replace(&mut self.batch.template, t));
+        loop {
+            let d = &mut self.design;
+            let from = if redo { &mut d.redo } else { &mut d.undo };
+            let Some(snap) = from.pop() else { return };
+            // Шаг про удалённый шортс пропускается.
+            let Some(prev) = self.design_restore(snap) else { continue };
+            let d = &mut self.design;
+            if redo { &mut d.undo } else { &mut d.redo }.push(prev);
             d.last_edit = None;
             d.drag = None;
             d.error = None;
-            d.layer = d.layer.filter(|&i| i < self.batch.template.layers.len());
+            let n = edited(&self.batch, d.short).layers.len();
+            d.layer = d.layer.filter(|&i| i < n);
+            return;
+        }
+    }
+
+    /// Чей шаблон правит «Оформление»: выбранного шортса (если включены локальные правки) или пачки.
+    /// Вызывается в начале кадра.
+    pub(crate) fn design_sync_target(&mut self) {
+        let short = self.cut.selected.filter(|&id| self.design.local && self.batch.short(id).is_some());
+        if short != self.design.short {
+            self.design.short = short;
+            self.design.last_edit = None;
+            self.design.drag = None;
+        }
+    }
+
+    /// Шаблон для превью: на «Оформлении» — тот, что правится, иначе — по выбранному шортсу.
+    pub(crate) fn preview_template(&self, design: bool) -> &Template {
+        match (design, self.cut.selected) {
+            (true, _) => edited(&self.batch, self.design.short),
+            (false, Some(id)) => self.batch.template_for(id),
+            (false, None) => edited(&self.batch, self.design.short),
         }
     }
 
     fn design_layer(&self) -> Option<usize> {
-        self.design.layer.filter(|&i| i < self.batch.template.layers.len())
+        self.design.layer.filter(|&i| i < edited(&self.batch, self.design.short).layers.len())
     }
 
     fn add_layer(&mut self, kind: NewLayer, image: Option<PathBuf>) {
-        let at = self.design_layer().map_or(self.batch.template.layers.len(), |i| i + 1);
+        let at = self.design_layer().map_or(edited(&self.batch, self.design.short).layers.len(), |i| i + 1);
         let layer = match kind {
             NewLayer::Video => {
                 let h = 1080.0 * 9.0 / 16.0 / 1920.0;
@@ -251,7 +324,7 @@ impl App {
 
     fn duplicate_layer(&mut self) {
         let Some(i) = self.design_layer() else { return };
-        let mut copy = self.batch.template.layers[i].clone();
+        let mut copy = edited(&self.batch, self.design.short).layers[i].clone();
         // Копия чуть ниже и правее, если влезает, — чтобы было видно, что она есть.
         let shift = |r: &mut Rect| {
             if r.right() + 0.02 <= 1.0 && r.bottom() + 0.02 <= 1.0 {
@@ -271,7 +344,7 @@ impl App {
     fn move_layer(&mut self, up: bool) {
         let Some(i) = self.design_layer() else { return };
         let j = if up { i + 1 } else { i.wrapping_sub(1) };
-        if j >= self.batch.template.layers.len() {
+        if j >= edited(&self.batch, self.design.short).layers.len() {
             return;
         }
         self.design.last_edit = None;
@@ -352,7 +425,7 @@ impl App {
             ];
             (i.modifiers, keys.into_iter().filter(|k| i.key_pressed(*k)).collect::<Vec<_>>())
         });
-        let canvas = self.batch.template.canvas;
+        let canvas = edited(&self.batch, self.design.short).canvas;
         let step = if m.shift { 10.0 } else { 1.0 };
         for key in pressed {
             let nudge = match key {
@@ -456,7 +529,9 @@ impl App {
             .filter(|s| s.status != ShortStatus::Rejected)
             .map(|s| {
                 let mark = if s.status == ShortStatus::Accepted { "✔" } else { "?" };
-                (s.id, format!("{mark} {} {}", fmt::clock_ms(s.start), excerpt(&s.title, 32)))
+                // ✏ — у шортса свои правки шаблона.
+                let own = if s.template.is_some() { " ✏" } else { "" };
+                (s.id, format!("{mark}{own} {} {}", fmt::clock_ms(s.start), excerpt(&s.title, 32)))
             })
             .collect();
         let current = self.cut.selected.and_then(|id| shorts.iter().find(|(s, _)| *s == id)).map(|(_, t)| t.clone());
@@ -479,13 +554,16 @@ impl App {
     }
 
     fn layers_ui(&mut self, ui: &mut egui::Ui) {
+        self.template_ui(ui);
+        ui.add_space(6.0);
+        ui.separator();
         ui.heading(self.i18n.tr("design-layers"));
         ui.add_space(4.0);
-        let n = self.batch.template.layers.len();
+        let n = edited(&self.batch, self.design.short).layers.len();
         let mut pick = self.design.layer;
         // Сверху списка — верхний слой.
         for i in (0..n).rev() {
-            let l = &self.batch.template.layers[i];
+            let l = &edited(&self.batch, self.design.short).layers[i];
             let kind = self.i18n.tr(layer_key(l));
             let mut text = match l {
                 Layer::Text { content, .. } => format!("{kind} · {}", excerpt(content, 18)),
@@ -551,19 +629,19 @@ impl App {
     }
 
     fn props_ui(&mut self, ui: &mut egui::Ui) {
-        let canvas = self.batch.template.canvas;
+        let canvas = edited(&self.batch, self.design.short).canvas;
         let mut pick = None;
         match self.design_layer() {
             None => {
                 ui.heading(self.i18n.tr("design-background"));
-                let mut bg = self.batch.template.background.clone();
+                let mut bg = edited(&self.batch, self.design.short).background.clone();
                 background_props(ui, &self.i18n, &mut bg, &mut pick);
-                if bg != self.batch.template.background {
+                if bg != edited(&self.batch, self.design.short).background {
                     self.design_edit("bg", |t| t.background = bg);
                 }
             }
             Some(i) => {
-                let orig = &self.batch.template.layers[i];
+                let orig = &edited(&self.batch, self.design.short).layers[i];
                 ui.heading(self.i18n.tr(layer_key(orig)));
                 if orig.in_unsafe_zone() {
                     ui.colored_label(Color32::from_rgb(255, 170, 60), self.i18n.tr("design-unsafe-warning"));
@@ -584,11 +662,11 @@ impl App {
     fn design_canvas(&mut self, ui: &mut egui::Ui) {
         let area = ui.available_rect_before_wrap();
         let empty = self.i18n.tr(if self.cut.source.is_none() { "design-preview-empty" } else { "cut-preview-loading" });
-        let screen = preview_canvas(ui, area, self.player.as_mut().unwrap(), &self.batch.template, &empty);
+        let screen = preview_canvas(ui, area, self.player.as_mut().unwrap(), edited(&self.batch, self.design.short), &empty);
         let src = self.player.as_ref().map_or((0, 0), |p| p.state.size);
         let has_src = src.0 > 0 && src.1 > 0;
 
-        let canvas = self.batch.template.canvas;
+        let canvas = edited(&self.batch, self.design.short).canvas;
         let (sw, sh) = (screen.width(), screen.height());
         let to_frac = |p: Pos2| ((p.x - screen.min.x) / sw, (p.y - screen.min.y) / sh);
         let to_screen = |r: Rect| egui::Rect::from_min_size(screen.min + Vec2::new(r.x * sw, r.y * sh), Vec2::new(r.w * sw, r.h * sh));
@@ -611,7 +689,7 @@ impl App {
         if let Some(p) = resp.hover_pos()
             && self.design.drag.is_none()
         {
-            let t = &self.batch.template;
+            let t = edited(&self.batch, self.design.short);
             let h = sel.and_then(|i| handle_at(t.layers[i].rect(), p));
             let icon = match h {
                 Some(Handle::N | Handle::S) => CursorIcon::ResizeVertical,
@@ -630,7 +708,7 @@ impl App {
         if resp.drag_started()
             && let Some(p) = ui.input(|i| i.pointer.press_origin())
         {
-            let t = &self.batch.template;
+            let t = edited(&self.batch, self.design.short);
             let from = to_frac(p);
             let grabbed = sel.and_then(|i| handle_at(t.layers[i].rect(), p).map(|h| (i, h)));
             let grabbed = grabbed.or_else(|| editor::hit(&t.layers, from, sel).map(|i| (i, Handle::Move)));
@@ -662,7 +740,7 @@ impl App {
                     }
                 });
             } else {
-                let targets = Targets::new(&self.batch.template.layers, i);
+                let targets = Targets::new(&edited(&self.batch, self.design.short).layers, i);
                 let opts = SnapOpts {
                     // Ctrl — временно без привязок.
                     threshold: (self.design.snap && !m.command).then_some((SNAP_PX / sw, SNAP_PX / sh)),
@@ -684,7 +762,7 @@ impl App {
         if resp.clicked()
             && let Some(p) = resp.interact_pointer_pos()
         {
-            let t = &self.batch.template;
+            let t = edited(&self.batch, self.design.short);
             if sel.and_then(|i| handle_at(t.layers[i].rect(), p)).is_none() {
                 self.design.layer = editor::hit(&t.layers, to_frac(p), None);
             }
@@ -693,8 +771,8 @@ impl App {
         if crop_mode
             && has_src
             && let Some(p) = resp.hover_pos()
-            && let Some(i) = editor::hit(&self.batch.template.layers, to_frac(p), sel)
-            && let Layer::MainVideo { crop, dest, .. } = &self.batch.template.layers[i]
+            && let Some(i) = editor::hit(&edited(&self.batch, self.design.short).layers, to_frac(p), sel)
+            && let Layer::MainVideo { crop, dest, .. } = &edited(&self.batch, self.design.short).layers[i]
         {
             let scroll = ui.input(|inp| inp.smooth_scroll_delta.y);
             if scroll != 0.0 {
@@ -714,7 +792,7 @@ impl App {
         }
 
         // Оверлеи редактора поверх холста.
-        let t = &self.batch.template;
+        let t = edited(&self.batch, self.design.short);
         let sel = self.design_layer();
         let painter = ui.painter().with_clip_rect(area);
         let canvas_painter = ui.painter().with_clip_rect(screen);
@@ -792,6 +870,39 @@ fn set_rect(l: &mut Layer, f: impl FnOnce(&mut Rect)) {
         | Layer::Capsule { rect: r, .. }
         | Layer::Shape { rect: r, .. }
         | Layer::BannerSlot { rect: r } => f(r),
+    }
+}
+
+/// Граница видео одним выбором (как у шаблона Terminal): нет / линия / тень. Тонкая настройка — строками ниже.
+fn edge_preset(ui: &mut egui::Ui, tr: &I18n, border: &mut Option<Border>, shadow: &mut Option<Shadow>) {
+    #[derive(PartialEq, Clone, Copy)]
+    enum Edge {
+        None,
+        Line,
+        Shadow,
+        Both,
+    }
+    let now = match (border.is_some(), shadow.is_some()) {
+        (false, false) => Edge::None,
+        (true, false) => Edge::Line,
+        (false, true) => Edge::Shadow,
+        (true, true) => Edge::Both,
+    };
+    let mut v = now;
+    row(ui, tr.tr("prop-edge"), |ui| {
+        let options = [(Edge::None, "edge-none"), (Edge::Line, "edge-line"), (Edge::Shadow, "edge-shadow")];
+        let options: &[(Edge, &str)] = if now == Edge::Both { &[(Edge::None, "edge-none"), (Edge::Line, "edge-line"), (Edge::Shadow, "edge-shadow"), (Edge::Both, "edge-both")] } else { &options };
+        align_combo(ui, tr, "edge", &mut v, options);
+    });
+    if v != now {
+        let line = || Border { width: 0.003, color: Color::rgb(0x39, 0xff, 0x7a) };
+        let soft = || Shadow { color: Color([0, 0, 0, 0xc0]), blur: 0.03, dx: 0.0, dy: 0.0 };
+        (*border, *shadow) = match v {
+            Edge::None => (None, None),
+            Edge::Line => (border.or_else(|| Some(line())), None),
+            Edge::Shadow => (None, shadow.or_else(|| Some(soft()))),
+            Edge::Both => (*border, *shadow),
+        };
     }
 }
 
@@ -909,6 +1020,7 @@ fn layer_props(ui: &mut egui::Ui, tr: &I18n, l: &mut Layer, i: usize, canvas: Ca
                     }
                 });
                 row(ui, tr.tr("prop-corner-radius"), |ui| px(ui, corner_radius, cw, 0.0..=0.5));
+                edge_preset(ui, tr, border, shadow);
                 let mut on = border.is_some();
                 row(ui, tr.tr("prop-border"), |ui| {
                     ui.checkbox(&mut on, "");

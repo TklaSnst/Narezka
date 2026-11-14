@@ -230,6 +230,7 @@ pub fn layer(layer: &Layer, canvas: Canvas) -> Result<LayerArt, RasterError> {
                 outline: outline.map(|o| ((o.width * cw).max(0.5), o.color)),
                 align: *align,
                 valign: *valign,
+                wrap: true,
             };
             LayerArt { below: None, above: text_sprite(x, y, w, h, content, &style, shadow.as_ref(), cw) }
         }
@@ -300,7 +301,8 @@ fn add_shadow(bm: &mut Bitmap, color: Color, sigma: f32, dx: i32, dy: i32) {
     }
 }
 
-/// Капсула: плашка-«таблетка», логотип слева (вписан в круг высоты), текст по центру оставшегося места.
+/// Капсула: плашка-«таблетка», логотип слева (вписан в круг высоты), текст по центру оставшегося места —
+/// всегда одной строкой, длинный ужимается.
 fn capsule(w: u32, h: u32, logo: Option<&image::RgbaImage>, text: &str, font: &str, text_color: Color, fill: Color) -> Bitmap {
     let mut bm = Bitmap::new(w, h);
     let c = premul(fill);
@@ -340,6 +342,7 @@ fn capsule(w: u32, h: u32, logo: Option<&image::RgbaImage>, text: &str, font: &s
         outline: None,
         align: if logo.is_some() { Align::Left } else { Align::Center },
         valign: VAlign::Center,
+        wrap: false,
     };
     if let Some(mut pm) = tiny_skia::Pixmap::from_vec(std::mem::take(&mut bm.data), tiny_skia::IntSize::from_wh(w, h).unwrap()) {
         text::draw_text(&mut pm, (text_x0, 0.0, text_w, hf), text, &style);

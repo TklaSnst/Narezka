@@ -353,6 +353,18 @@ impl Batch {
         v
     }
 
+    /// Значение `{part}` для шортса: его номер среди принятых шортсов того же исходника по времени (с 1).
+    /// Для непринятого — номер, который он получит, если его принять.
+    pub fn part_number(&self, id: ShortId) -> u32 {
+        let Some(short) = self.short(id) else { return 1 };
+        let before = self
+            .shorts_of(short.source_id)
+            .into_iter()
+            .filter(|s| s.id != id && s.status == ShortStatus::Accepted && s.start < short.start)
+            .count();
+        before as u32 + 1
+    }
+
     /// Проверяет границы шортса относительно исходника и остальных шортсов
     /// (кроме него самого — для редактирования). Принятые не перекрываются друг с другом, если
     /// не включено `allow_overlap`; кандидаты и отклонённые могут лежать где угодно (DECISIONS).

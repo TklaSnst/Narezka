@@ -1,11 +1,11 @@
 //! Ручная проверка рендера без интерфейса:
 //! `cargo run --release -p sc-render --example render_short -- <видео> <ширина> <высота> <начало> <конец> <выход.mp4> [кодировщик]`
-//! Шаблон — из файла `SC_TEMPLATE` (TOML), иначе минимальный.
+//! Шаблон — из файла `SC_TEMPLATE` (TOML), иначе минимальный; `{title}` — из `SC_TITLE`.
 
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use sc_core::{OutputSettings, Template};
+use sc_core::{OutputSettings, Template, TextVars};
 use sc_render::{Encoder, RenderJob};
 
 fn main() {
@@ -26,7 +26,8 @@ fn main() {
         end: a[4].parse().unwrap(),
         template: std::env::var_os("SC_TEMPLATE")
             .map(|p| Template::from_toml(&std::fs::read_to_string(p).unwrap()).unwrap())
-            .unwrap_or_else(Template::minimal),
+            .unwrap_or_else(Template::minimal)
+            .with_vars(&TextVars { part: 1, title: std::env::var("SC_TITLE").unwrap_or_default() }),
         output: OutputSettings::default(),
         encoder: Encoder { name, vaapi_device },
         work_dir: std::env::temp_dir().join("sc-render-example"),

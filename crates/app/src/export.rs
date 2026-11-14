@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
-use sc_core::Batch;
+use sc_core::{Batch, TextVars};
 use sc_render::{Encoder, RenderError, RenderJob, plan_outputs};
 
 use crate::App;
@@ -77,7 +77,7 @@ impl App {
                     has_audio: info.has_audio,
                     start: short.start,
                     end: short.end,
-                    template: batch.template.clone(),
+                    template: batch.template.with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() }),
                     output: batch.output.clone(),
                     encoder: encoder.clone(),
                     dest,

@@ -1,5 +1,5 @@
 //! Общий растеризатор превью и рендера: всё, что не зависит от кадра видео, рисуется здесь в RGBA —
-//! фон-градиент и фон-картинка, тени и рамки слоёв видео, фигуры, картинки (текст и капсулы — шаг 3.2).
+//! фон-градиент и фон-картинка, тени и рамки слоёв видео, фигуры, картинки, текст и капсулы.
 //! Превью загружает результат в текстуры, рендер пишет в файлы и накладывает `overlay`: одна картинка
 //! на обе стороны, поэтому совпадение не зависит от того, как их рисовал бы GL или ffmpeg.
 //!
@@ -8,7 +8,11 @@
 use std::path::{Path, PathBuf};
 
 use image::imageops::FilterType;
-use sc_core::{Background, Canvas, Color, Layer, Paint, Rect, Shadow, Template, gradient_t, rounded_rect_coverage};
+use sc_core::{Align, Background, Canvas, Color, Layer, Paint, Rect, Shadow, Template, VAlign, gradient_t, rounded_rect_coverage};
+
+pub mod text;
+
+pub use text::{TextStyle, warm_up};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RasterError {
@@ -200,23 +204,137 @@ pub fn layer(layer: &Layer, canvas: Canvas) -> Result<LayerArt, RasterError> {
             LayerArt { below: None, above: Some(Sprite { x, y, bitmap: bm }) }
         }
         Layer::Image { rect, path, opacity } => {
-            let img = open(path)?;
             let (x, y, w, h) = rect_px(*rect, canvas);
-            // «Вписать» с сохранением пропорций, по центру прямоугольника.
-            let (iw, ih) = (img.width() as f32, img.height() as f32);
-            let k = (w as f32 / iw).min(h as f32 / ih);
-            let (sw, sh) = (((iw * k).round() as u32).max(1), ((ih * k).round() as u32).max(1));
-            let scaled = image::imageops::resize(&img, sw, sh, FilterType::CatmullRom);
-            let mut bm = Bitmap::new(sw, sh);
-            for (px, py, p) in scaled.enumerate_pixels() {
-                bm.set(px, py, premul(Color(p.0)).map(|v| v * opacity));
-            }
-            let sprite = Sprite { x: x + (w - sw) as i32 / 2, y: y + (h - sh) as i32 / 2, bitmap: bm };
-            LayerArt { below: None, above: Some(sprite) }
+            let (bm, ox, oy) = fit_image(&open(path)?, w, h, *opacity);
+            LayerArt { below: None, above: Some(Sprite { x: x + ox, y: y + oy, bitmap: bm }) }
         }
-        // Текст и капсула — шаг 3.2, место баннера — этап 5.
-        Layer::Text { .. } | Layer::Capsule { .. } | Layer::BannerSlot { .. } => LayerArt::default(),
+        Layer::Text { rect, content, font, size, color, accent_color, accent_mode, outline, shadow, align, valign } => {
+            let (x, y, w, h) = rect_px(*rect, canvas);
+            let style = TextStyle {
+                font,
+                size: size * cw,
+                color: *color,
+                accent_color: *accent_color,
+                accent_mode: *accent_mode,
+                outline: outline.map(|o| ((o.width * cw).max(0.5), o.color)),
+                align: *align,
+                valign: *valign,
+            };
+            LayerArt { below: None, above: text_sprite(x, y, w, h, content, &style, shadow.as_ref(), cw) }
+        }
+        Layer::Capsule { rect, logo, text, font, text_color, fill } => {
+            let (x, y, w, h) = rect_px(*rect, canvas);
+            let logo = logo.as_deref().map(open).transpose()?;
+            LayerArt { below: None, above: Some(Sprite { x, y, bitmap: capsule(w, h, logo.as_ref(), text, font, *text_color, *fill) }) }
+        }
+        // Место баннера — этап 5.
+        Layer::BannerSlot { .. } => LayerArt::default(),
     })
+}
+
+/// Картинка, вписанная в `w`×`h` с сохранением пропорций, и её сдвиг до центра прямоугольника.
+fn fit_image(img: &image::RgbaImage, w: u32, h: u32, opacity: f32) -> (Bitmap, i32, i32) {
+    let (iw, ih) = (img.width() as f32, img.height() as f32);
+    let k = (w as f32 / iw).min(h as f32 / ih);
+    let (sw, sh) = (((iw * k).round() as u32).clamp(1, w), ((ih * k).round() as u32).clamp(1, h));
+    let scaled = image::imageops::resize(img, sw, sh, FilterType::CatmullRom);
+    let mut bm = Bitmap::new(sw, sh);
+    for (px, py, p) in scaled.enumerate_pixels() {
+        bm.set(px, py, premul(Color(p.0)).map(|v| v * opacity));
+    }
+    (bm, (w - sw) as i32 / 2, (h - sh) as i32 / 2)
+}
+
+/// Текстовый слой: прямоугольник `(x, y, w, h)` с полями под обводку, вылезающие глифы и тень.
+#[allow(clippy::too_many_arguments)]
+fn text_sprite(x: i32, y: i32, w: u32, h: u32, content: &str, style: &TextStyle, shadow: Option<&Shadow>, cw: f32) -> Option<Sprite> {
+    if content.trim().is_empty() {
+        return None;
+    }
+    let sigma = shadow.map_or(0.0, |s| s.blur * cw / 2.0);
+    let (sdx, sdy) = shadow.map_or((0, 0), |s| ((s.dx * cw).round() as i32, (s.dy * cw).round() as i32));
+    let outline = style.outline.map_or(0.0, |o| o.0);
+    let m = (style.size * 0.5 + outline + sigma * 3.0).ceil() as u32 + sdx.unsigned_abs().max(sdy.unsigned_abs()) + 1;
+    let (bw, bh) = (w + 2 * m, h + 2 * m);
+    let mut pm = tiny_skia::Pixmap::new(bw, bh)?;
+    text::draw_text(&mut pm, (m as f32, m as f32, w as f32, h as f32), content, style);
+    let mut bm = Bitmap { width: bw, height: bh, data: pm.take() };
+    if let Some(s) = shadow {
+        add_shadow(&mut bm, s.color, sigma, sdx, sdy);
+    }
+    Some(Sprite { x: x - m as i32, y: y - m as i32, bitmap: bm })
+}
+
+/// Подкладывает под картинку её тень: альфа, размытая гауссом `sigma` и сдвинутая на `(dx, dy)`.
+fn add_shadow(bm: &mut Bitmap, color: Color, sigma: f32, dx: i32, dy: i32) {
+    let (w, h) = (bm.width as usize, bm.height as usize);
+    let mut alpha: Vec<f32> = bm.data.as_chunks::<4>().0.iter().map(|p| p[3] as f32 / 255.0).collect();
+    if sigma > 0.0 {
+        for size in box_sizes(sigma) {
+            box_blur(&mut alpha, w, h, size);
+        }
+    }
+    let c = premul(color);
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = (x as i32 - dx, y as i32 - dy);
+            let a = if (0..w as i32).contains(&sx) && (0..h as i32).contains(&sy) { alpha[sy as usize * w + sx as usize] } else { 0.0 };
+            let i = (y * w + x) * 4;
+            let top = bm.data[i + 3] as f32 / 255.0;
+            for (k, ck) in c.iter().enumerate() {
+                let v = bm.data[i + k] as f32 / 255.0 + ck * a * (1.0 - top);
+                bm.data[i + k] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+    }
+}
+
+/// Капсула: плашка-«таблетка», логотип слева (вписан в круг высоты), текст по центру оставшегося места.
+fn capsule(w: u32, h: u32, logo: Option<&image::RgbaImage>, text: &str, font: &str, text_color: Color, fill: Color) -> Bitmap {
+    let mut bm = Bitmap::new(w, h);
+    let c = premul(fill);
+    for py in 0..h {
+        for px in 0..w {
+            let a = rounded_rect_coverage(w as f32, h as f32, h as f32 / 2.0, px as f32 + 0.5, py as f32 + 0.5);
+            bm.set(px, py, c.map(|v| v * a));
+        }
+    }
+    let hf = h as f32;
+    let pad = (hf * 0.12).round() as u32;
+    let mut text_x0 = hf * 0.45;
+    if let Some(img) = logo {
+        let side = h.saturating_sub(2 * pad).max(1);
+        let (lb, ox, oy) = fit_image(img, side, side, 1.0);
+        let (lx, ly) = (pad as i32 + ox, pad as i32 + oy);
+        for py in 0..lb.height {
+            for px in 0..lb.width {
+                let (x, y) = (lx + px as i32, ly + py as i32);
+                if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+                    continue;
+                }
+                let src = lb.pixel(px, py).map(|v| v as f32 / 255.0);
+                let dst = bm.pixel(x as u32, y as u32).map(|v| v as f32 / 255.0);
+                bm.set(x as u32, y as u32, std::array::from_fn(|k| src[k] + dst[k] * (1.0 - src[3])));
+            }
+        }
+        text_x0 = (pad + side) as f32 + hf * 0.25;
+    }
+    let text_w = (w as f32 - hf * 0.45 - text_x0).max(1.0);
+    let style = TextStyle {
+        font,
+        size: hf * 0.5,
+        color: text_color,
+        accent_color: text_color,
+        accent_mode: sc_core::AccentMode::Color,
+        outline: None,
+        align: if logo.is_some() { Align::Left } else { Align::Center },
+        valign: VAlign::Center,
+    };
+    if let Some(mut pm) = tiny_skia::Pixmap::from_vec(std::mem::take(&mut bm.data), tiny_skia::IntSize::from_wh(w, h).unwrap()) {
+        text::draw_text(&mut pm, (text_x0, 0.0, text_w, hf), text, &style);
+        bm.data = pm.take();
+    }
+    bm
 }
 
 fn open(path: &Path) -> Result<image::RgbaImage, RasterError> {
@@ -395,6 +513,106 @@ mod tests {
 
         let missing = Layer::Image { rect: Rect::FULL, path: dir.path().join("нет.png"), opacity: 1.0 };
         assert!(matches!(layer(&missing, canvas()), Err(RasterError::Image { .. })));
+    }
+
+    fn text_layer(content: &str) -> Layer {
+        Layer::Text {
+            rect: Rect::new(0.1, 0.1, 0.8, 0.2),
+            content: content.into(),
+            font: "DejaVu Sans Bold".into(),
+            size: 0.1,
+            color: Color::WHITE,
+            accent_color: Color::rgb(255, 0, 0),
+            accent_mode: sc_core::AccentMode::Color,
+            outline: None,
+            shadow: None,
+            align: Align::Center,
+            valign: VAlign::Center,
+        }
+    }
+
+    /// Число пикселей спрайта (premultiplied RGBA), подходящих под условие.
+    fn count(s: &Sprite, f: impl Fn([u8; 4]) -> bool) -> usize {
+        s.bitmap.data.as_chunks::<4>().0.iter().filter(|p| f(**p)).count()
+    }
+
+    #[test]
+    fn text_accent_color_and_plate() {
+        let s = layer(&text_layer("ТОП *ЯЗЫКОВ*"), canvas()).unwrap().above.unwrap();
+        let white = count(&s, |p| p[3] == 255 && p[0] == 255 && p[1] == 255);
+        let red = count(&s, |p| p[3] == 255 && p[0] == 255 && p[1] == 0);
+        assert!(white > 20 && red > 20, "белых {white}, красных {red}");
+        // поля под вылезающие глифы: спрайт больше прямоугольника 80×40
+        assert!(s.x < 10 && s.y < 20 && s.bitmap.width > 80, "{} {} {}", s.x, s.y, s.bitmap.width);
+
+        let mut l = text_layer("ТОП *ЯЗЫКОВ*");
+        let Layer::Text { accent_mode, .. } = &mut l else { panic!() };
+        *accent_mode = sc_core::AccentMode::Plate;
+        let p = layer(&l, canvas()).unwrap().above.unwrap();
+        let plate = count(&p, |p| p[3] == 255 && p[0] == 255 && p[1] == 0);
+        // плашка закрашивает намного больше, чем сами буквы
+        assert!(plate > red * 2, "плашка {plate}, буквы {red}");
+        assert!(count(&p, |p| p[3] == 255 && p[1] == 255) > 20, "текст на плашке белый");
+    }
+
+    #[test]
+    fn text_outline_shadow_and_empty() {
+        let plain = layer(&text_layer("Привет"), canvas()).unwrap().above.unwrap();
+        let mut l = text_layer("Привет");
+        let Layer::Text { outline, .. } = &mut l else { panic!() };
+        *outline = Some(sc_core::Outline { width: 0.03, color: Color::BLACK });
+        let o = layer(&l, canvas()).unwrap().above.unwrap();
+        let opaque = |s: &Sprite| count(s, |p| p[3] > 128);
+        assert!(opaque(&o) > opaque(&plain) * 3 / 2, "{} vs {}", opaque(&o), opaque(&plain));
+        assert!(count(&o, |p| p[3] == 255 && p[0] == 0) > 50, "чёрная обводка");
+
+        let Layer::Text { outline, shadow, .. } = &mut l else { panic!() };
+        *outline = None;
+        *shadow = Some(Shadow { color: Color::BLACK, blur: 0.0, dx: 0.02, dy: 0.02 });
+        let sh = layer(&l, canvas()).unwrap().above.unwrap();
+        // жёсткая тень сдвинута на 2 px: чёрные непрозрачные пиксели появились, белые остались
+        assert!(count(&sh, |p| p[3] == 255 && p[0] == 0) > 20);
+        assert_eq!(count(&sh, |p| p[3] == 255 && p[0] == 255), count(&plain, |p| p[3] == 255 && p[0] == 255));
+
+        assert_eq!(layer(&text_layer("  "), canvas()).unwrap(), LayerArt::default());
+    }
+
+    #[test]
+    fn long_text_shrinks_to_fit() {
+        let short = layer(&text_layer("Слово"), canvas()).unwrap().above.unwrap();
+        let long = layer(&text_layer("Очень длинный заголовок из многих слов, который не помещается"), canvas()).unwrap().above.unwrap();
+        // строки по вертикали: от верхнего до нижнего непрозрачного пикселя на холсте
+        let rows = |s: &Sprite| {
+            let w = s.bitmap.width as usize;
+            let ys: Vec<usize> = s.bitmap.data.as_chunks::<4>().0.iter().enumerate().filter(|(_, p)| p[3] > 0).map(|(i, _)| i / w).collect();
+            (s.y + *ys.first().unwrap() as i32, s.y + *ys.last().unwrap() as i32)
+        };
+        // текст уменьшен и остался в прямоугольнике (y 20..60)
+        let (t, b) = rows(&long);
+        assert!(t >= 18 && b <= 62, "{t}..{b}");
+        let (st, sb) = rows(&short);
+        assert!(sb - st < b - t, "одна строка ниже нескольких");
+    }
+
+    #[test]
+    fn capsule_with_logo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logo.png");
+        image::RgbaImage::from_pixel(10, 10, image::Rgba([0, 255, 0, 255])).save(&path).unwrap();
+        let l = Layer::Capsule {
+            rect: Rect::new(0.1, 0.1, 0.8, 0.1),
+            logo: Some(path),
+            text: "канал".into(),
+            font: "DejaVu Sans".into(),
+            text_color: Color::WHITE,
+            fill: Color::rgb(0, 0, 255),
+        };
+        let s = layer(&l, canvas()).unwrap().above.unwrap();
+        assert_eq!((s.x, s.y, s.bitmap.width, s.bitmap.height), (10, 20, 80, 20));
+        assert_eq!(s.bitmap.pixel(0, 0)[3], 0, "углы скруглены");
+        assert_eq!(s.bitmap.pixel(10, 10), [0, 255, 0, 255], "логотип слева");
+        assert_eq!(s.bitmap.pixel(40, 1), [0, 0, 255, 255], "заливка");
+        assert!(count(&s, |p| p == [255; 4]) > 5, "белый текст");
     }
 
     #[test]

@@ -59,7 +59,7 @@ crates/
 - `layers` (упорядоченный список, z-order):
   - `MainVideo { crop_rect (в долях исходника), dest_rect (в долях холста), corner_radius, border, shadow }` — может быть несколько (шаблон «Два экрана»)
   - `Text { content с разметкой акцента *…*, font, size, color, accent_color, accent_mode: Color|Plate, outline, shadow, rect, align }`
-    — поддерживает подстановки `{part}`, `{title}`
+    — поддерживает подстановки `{part}` (номер среди принятых шортсов ролика), `{title}`; не влезающий текст уменьшается
   - `Image { asset, rect, opacity }`
   - `Capsule { logo asset, text, colors, rect }`
   - `Subtitles { style, rect, mode: Static|WordHighlight|Reveal, words_per_line, colors }`

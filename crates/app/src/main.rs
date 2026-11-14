@@ -10,7 +10,7 @@ mod player;
 mod timeline;
 
 use eframe::{egui, glow};
-use sc_core::{Batch, Language, Paths, Settings};
+use sc_core::{Batch, Language, Paths, Settings, TextVars};
 use sc_i18n::I18n;
 use sc_media::{Capabilities, EncoderKind};
 
@@ -234,7 +234,12 @@ impl eframe::App for App {
             if self.tab != Tab::Cut {
                 p.set_paused(true);
             }
-            p.pump(frame, &self.batch.template);
+            // Подстановки — по выбранному шортсу (без выбора: «Часть 1», пустой заголовок).
+            let vars = match self.cut.selected.and_then(|id| self.batch.short(id)) {
+                Some(s) => TextVars { part: self.batch.part_number(s.id), title: s.title.clone() },
+                None => TextVars { part: 1, title: String::new() },
+            };
+            p.pump(frame, &self.batch.template.with_vars(&vars));
         }
         // Ctrl+1…6 — вкладки по порядку.
         let digits = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6];
@@ -318,6 +323,8 @@ fn main() -> eframe::Result {
     // До любых потоков и до инициализации ggml (whisper).
     sc_analysis::prepare_ggml_env();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Системные шрифты для текстовых слоёв грузятся сотни миллисекунд — заранее и не в UI-потоке.
+    std::thread::spawn(sc_raster::warm_up);
     sc_mpv::set_c_numeric_locale();
 
     let paths = Paths::from_env().expect("не удалось определить домашний каталог");

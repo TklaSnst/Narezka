@@ -147,3 +147,26 @@ fn replace_candidates_keeps_accepted() {
     // 31–49 почти целиком внутри принятого — не добавлен; 45–75 занят принятым лишь на 5 с из 30.
     assert_eq!(starts, [0.0, 30.0, 45.0, 60.0]);
 }
+
+#[test]
+fn part_number_counts_accepted_of_same_source() {
+    let (mut b, src) = batch_with_source(600.0);
+    let mut s2 = b.source(src).unwrap().clone();
+    s2.path = "/video/второй.mp4".into();
+    s2.id = SourceId::default();
+    let other = b.add_source(s2);
+    let mut add = |source, start: f64, status| {
+        let mut s = Short::manual(source, start, start + 20.0);
+        s.status = status;
+        b.add_short(s).unwrap()
+    };
+    let first = add(src, 0.0, ShortStatus::Accepted);
+    let cand = add(src, 30.0, ShortStatus::Candidate);
+    let second = add(src, 60.0, ShortStatus::Accepted);
+    let elsewhere = add(other, 0.0, ShortStatus::Accepted);
+    assert_eq!(b.part_number(first), 1);
+    // кандидат получит номер 2, если его принять
+    assert_eq!(b.part_number(cand), 2);
+    assert_eq!(b.part_number(second), 2);
+    assert_eq!(b.part_number(elsewhere), 1);
+}

@@ -30,7 +30,12 @@ in vec2 v_local;
 in vec2 v_uv;
 out vec4 o;
 void main() {
-    vec4 c = texture(tex, v_uv);
+    // Уменьшение: четыре отсчёта по пикселю выхода с мипмапа на уровень детальнее — ближе к lanczos
+    // рендера, чем одна трилинейная выборка (та заметно мылит текст).
+    vec2 dx = dFdx(v_uv) * 0.25;
+    vec2 dy = dFdy(v_uv) * 0.25;
+    vec4 c = 0.25 * (texture(tex, v_uv - dx - dy, -1.0) + texture(tex, v_uv + dx - dy, -1.0)
+                   + texture(tex, v_uv - dx + dy, -1.0) + texture(tex, v_uv + dx + dy, -1.0));
     float cov = 1.0;
     if (radius_px > 0.0) {
         float r = min(radius_px, min(size_px.x, size_px.y) * 0.5);

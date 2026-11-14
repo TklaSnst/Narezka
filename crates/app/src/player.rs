@@ -12,9 +12,9 @@ use eframe::egui;
 use eframe::glow;
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use sc_compositor::Compositor;
-use sc_core::{Background, Template};
+use sc_core::{Background, Layer, Template};
 use sc_mpv::{Event, Format, GetProcAddress, Mpv, Prop};
-use sc_raster::Art;
+use sc_raster::{Art, LayerArt};
 
 /// Последние известные значения свойств mpv.
 #[derive(Debug, Clone, Default)]
@@ -50,6 +50,8 @@ pub struct Player {
     range: Option<(f64, f64)>,
     /// Шаблон, по которому растрированы слои (растры пересчитываются при его изменении).
     template: Option<Template>,
+    /// Растры слоёв прошлого шаблона: неизменённые слои не растрируются заново.
+    layer_art: Vec<(Layer, LayerArt)>,
     /// Размер холста на экране в пикселях (из прошлого кадра UI).
     canvas_size: (u32, u32),
     canvas_tex: Option<egui::TextureId>,
@@ -109,6 +111,7 @@ impl Player {
             loaded: None,
             range: None,
             template: None,
+            layer_art: Vec::new(),
             canvas_size: (0, 0),
             canvas_tex: None,
             dirty: true,
@@ -277,17 +280,24 @@ impl Player {
             log::error!("фон шаблона: {e}");
             None
         });
-        let layers = template
+        let same_canvas = self.template.as_ref().is_some_and(|t| t.canvas == canvas);
+        let layer_art: Vec<(Layer, LayerArt)> = template
             .layers
             .iter()
             .map(|l| {
-                sc_raster::layer(l, canvas).unwrap_or_else(|e| {
-                    log::error!("слой шаблона: {e}");
-                    Default::default()
-                })
+                let cached = self.layer_art.iter().find(|(old, _)| same_canvas && old == l);
+                let art = match cached {
+                    Some((_, a)) => a.clone(),
+                    None => sc_raster::layer(l, canvas).unwrap_or_else(|e| {
+                        log::error!("слой шаблона: {e}");
+                        Default::default()
+                    }),
+                };
+                (l.clone(), art)
             })
             .collect();
-        let art = Art { background, layers };
+        let art = Art { background, layers: layer_art.iter().map(|(_, a)| a.clone()).collect() };
+        self.layer_art = layer_art;
         unsafe {
             if let Err(e) = self.comp.set_art(&self.gl, &art) {
                 log::error!("растры шаблона: {e}");

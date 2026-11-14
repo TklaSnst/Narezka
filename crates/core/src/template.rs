@@ -348,12 +348,39 @@ impl Template {
         Ok(())
     }
 
+    /// Шаблон для конкретного шортса: `{part}` и `{title}` в текстах заменены значениями.
+    pub fn with_vars(&self, vars: &TextVars) -> Self {
+        let mut t = self.clone();
+        for layer in &mut t.layers {
+            match layer {
+                Layer::Text { content: s, .. } | Layer::Capsule { text: s, .. } => *s = vars.apply(s),
+                _ => {}
+            }
+        }
+        t
+    }
+
     pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(s)
     }
 
     pub fn to_toml(&self) -> String {
         toml::to_string_pretty(self).expect("шаблон всегда сериализуется в TOML")
+    }
+}
+
+/// Значения подстановок в текстах шаблона.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TextVars {
+    /// `{part}` — номер шортса среди принятых своего исходника (с 1).
+    pub part: u32,
+    /// `{title}` — заголовок шортса.
+    pub title: String,
+}
+
+impl TextVars {
+    pub fn apply(&self, s: &str) -> String {
+        s.replace("{part}", &self.part.to_string()).replace("{title}", &self.title)
     }
 }
 
@@ -478,6 +505,37 @@ mod tests {
         let mut t = Template::minimal();
         t.layers = vec![Layer::BannerSlot { rect: Rect::FULL }];
         assert_eq!(t.validate(), Err(TemplateError::NoMainVideo));
+    }
+
+    #[test]
+    fn vars_substituted_in_text_and_capsule() {
+        let mut t = Template::minimal();
+        t.layers.push(Layer::Capsule {
+            rect: Rect::new(0.1, 0.1, 0.5, 0.05),
+            logo: None,
+            text: "Часть {part}".into(),
+            font: "Sans".into(),
+            text_color: Color::WHITE,
+            fill: Color::BLACK,
+        });
+        let text = |content: &str| Layer::Text {
+            rect: Rect::new(0.0, 0.0, 1.0, 0.1),
+            content: content.into(),
+            font: "Sans".into(),
+            size: 0.05,
+            color: Color::WHITE,
+            accent_color: default_accent(),
+            accent_mode: AccentMode::Color,
+            outline: None,
+            shadow: None,
+            align: Align::Center,
+            valign: VAlign::Center,
+        };
+        t.layers.push(text("{title} — {part}/{x}"));
+        let r = t.with_vars(&TextVars { part: 3, title: "Про *bash*".into() });
+        assert!(matches!(&r.layers[1], Layer::Capsule { text, .. } if text == "Часть 3"));
+        assert_eq!(r.layers[2], text("Про *bash* — 3/{x}"));
+        assert_eq!(r.layers[0], t.layers[0]);
     }
 
     #[test]

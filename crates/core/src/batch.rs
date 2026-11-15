@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::banner::Banner;
 use crate::library::{self, DEFAULT_BUILTIN, TemplateRef};
 use crate::subtitles::SubtitleEdits;
 use crate::template::{Canvas, Template};
@@ -156,6 +157,9 @@ pub struct Short {
     /// Ручные правки субтитров (ключевые слова).
     #[serde(default, skip_serializing_if = "SubtitleEdits::is_empty")]
     pub subtitles: SubtitleEdits,
+    /// Этот шортс — без баннера пачки.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_banner: bool,
 }
 
 impl Short {
@@ -175,6 +179,7 @@ impl Short {
             auto: false,
             template: None,
             subtitles: SubtitleEdits::default(),
+            no_banner: false,
         }
     }
 
@@ -312,6 +317,22 @@ pub struct Batch {
     /// Разрешить принятым шортсам перекрываться (SPEC §2: по умолчанию нельзя).
     #[serde(default)]
     pub allow_overlap: bool,
+    /// Баннер на все шортсы пачки; `None` — без баннера.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banner: Option<Banner>,
+}
+
+/// Настройки пачки для «Сделать как в прошлый раз?» (SPEC §4): хранятся в `history.toml`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchPreset {
+    /// Секунды Unix.
+    pub at: u64,
+    pub template: Template,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_ref: Option<TemplateRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banner: Option<Banner>,
+    pub output: OutputSettings,
 }
 
 /// Кусок шортса после разделения не короче, с.
@@ -326,11 +347,36 @@ impl Default for Batch {
             template_ref: Some(TemplateRef::Builtin(DEFAULT_BUILTIN.into())),
             output: OutputSettings::default(),
             allow_overlap: false,
+            banner: None,
         }
     }
 }
 
 impl Batch {
+    /// Настройки пачки, которые переносятся в следующую (`at` — когда).
+    pub fn preset(&self, at: u64) -> BatchPreset {
+        BatchPreset {
+            at,
+            template: self.template.clone(),
+            template_ref: self.template_ref.clone(),
+            banner: self.banner.clone(),
+            output: self.output.clone(),
+        }
+    }
+
+    /// «Как в прошлый раз»: шаблон, баннер и вывод из пресета; исходники и шортсы не трогаются.
+    pub fn apply_preset(&mut self, p: &BatchPreset) {
+        self.template = p.template.clone();
+        self.template_ref = p.template_ref.clone();
+        self.banner = p.banner.clone();
+        self.output = p.output.clone();
+    }
+
+    /// Баннер шортса `id`: баннер пачки, если шортс от него не отказался.
+    pub fn banner_for(&self, id: ShortId) -> Option<&Banner> {
+        self.banner.as_ref().filter(|_| !self.short(id).is_some_and(|s| s.no_banner))
+    }
+
     pub fn source(&self, id: SourceId) -> Option<&Source> {
         self.sources.iter().find(|s| s.id == id)
     }

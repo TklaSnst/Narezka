@@ -441,3 +441,35 @@ orientation-square = square
 size-kb = { $n } KB
 size-mb = { $n } MB
 size-gb = { $n } GB
+
+## Batch banner
+banner-title = Batch banner
+banner-place-hint = Position and size: the “Banner slot” frame on the canvas; the banner is fitted into it.
+banner-none = No banner
+banner-missing = ⚠ The batch banner is not in the library (deleted or its file is gone) — shorts will be rendered without it.
+banner-library-empty = No banners or images in the library.
+banner-open-library = Open the library
+banner-text-on = Text next to it
+banner-text-hint = A promo code or link — moves together with the banner.
+banner-text-placeholder = Promo code *SHORTS* — 20% off
+banner-side = Where
+banner-side-below = below
+banner-side-above = above
+banner-side-left = left
+banner-side-right = right
+banner-skip-short = No banner on this short
+library-use-banner = Use as the batch banner
+library-use-banner-hint = The banner goes into the template's “Banner slot” on every short.
+library-is-banner = ✔ Batch banner
+library-banner-set = “{ $name }” is the batch banner now.
+
+## Same as last time
+preset-title = Same as last time?
+preset-when = Last batch: { $when }.
+preset-template = Template
+preset-banner = Banner
+preset-banner-gone = (deleted from the library)
+preset-output = Folder
+preset-dir-default = next to the source
+preset-yes = Yes, same as last time
+preset-no = No, start fresh

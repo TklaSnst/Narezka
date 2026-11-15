@@ -145,6 +145,7 @@ fn layer_key(l: &Layer) -> &'static str {
         Layer::Capsule { .. } => "layer-capsule",
         Layer::Shape { .. } => "layer-shape",
         Layer::BannerSlot { .. } => "layer-banner",
+        Layer::Clip { .. } => "layer-image",
         Layer::Subtitles { .. } => "layer-subtitles",
     }
 }
@@ -374,7 +375,7 @@ impl App {
         self.design.layer = Some(j);
     }
 
-    fn pick_file(&mut self, target: FileTarget) {
+    pub(crate) fn pick_file(&mut self, target: FileTarget) {
         self.dialog_open = true;
         let (title, filter, exts) = match target {
             FileTarget::BackgroundVideo => ("design-pick-video", "design-filter-video", VIDEO_EXTS),
@@ -412,6 +413,13 @@ impl App {
                 let darken = bg_darken(&t.background);
                 t.background = Background::Video { path, darken };
             }),
+            FileTarget::Font(_) if target.is_banner_font() => match sc_raster::fonts::install_font(&path) {
+                Ok(name) => self.set_banner_font(name),
+                Err(e) => {
+                    log::error!("шрифт {path:?}: {e}");
+                    self.design.error = Some("design-font-failed");
+                }
+            },
             FileTarget::Font(i) => match sc_raster::fonts::install_font(&path) {
                 Ok(name) => self.design_edit("file", |t| {
                     if let Some(Layer::Text { font, .. } | Layer::Capsule { font, .. } | Layer::Subtitles { font, .. }) =
@@ -671,11 +679,17 @@ impl App {
                 if orig.in_unsafe_zone() {
                     ui.colored_label(Color32::from_rgb(255, 170, 60), self.i18n.tr("design-unsafe-warning"));
                 }
+                let slot = matches!(orig, Layer::BannerSlot { .. });
                 let mut l = orig.clone();
                 layer_props(ui, &self.i18n, &mut l, i, canvas, &mut pick);
                 if &l != orig {
                     let key = format!("prop:{i}");
                     self.design_edit(&key, |t| t.layers[i] = l);
+                }
+                if slot {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    self.banner_ui(ui);
                 }
             }
         }
@@ -842,8 +856,17 @@ impl App {
                 canvas_painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 90, 90, 120)), egui::StrokeKind::Inside);
             }
         }
+        // Баннер виден в превью — у его места только тонкая рамка.
+        let banner_shown = self.batch.banner.is_some() && !self.banner_missing()
+            && !self.cut.selected.and_then(|id| self.batch.short(id)).is_some_and(|s| s.no_banner);
+        let first_slot = t.banner_slot();
         for (i, l) in t.layers.iter().enumerate() {
-            if let Layer::BannerSlot { rect } = l {
+            if let Layer::BannerSlot { rect } = l
+                && banner_shown
+                && first_slot == Some(i)
+            {
+                canvas_painter.rect_stroke(to_screen(*rect), 2.0, Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 200, 60, 110)), egui::StrokeKind::Inside);
+            } else if let Layer::BannerSlot { rect } = l {
                 let r = to_screen(*rect);
                 canvas_painter.rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(255, 200, 60, 30));
                 canvas_painter.rect_stroke(r, 2.0, Stroke::new(1.0, Color32::from_rgb(255, 200, 60)), egui::StrokeKind::Inside);
@@ -895,6 +918,7 @@ fn set_rect(l: &mut Layer, f: impl FnOnce(&mut Rect)) {
         | Layer::Capsule { rect: r, .. }
         | Layer::Shape { rect: r, .. }
         | Layer::BannerSlot { rect: r }
+        | Layer::Clip { rect: r, .. }
         | Layer::Subtitles { rect: r, .. } => f(r),
     }
 }
@@ -967,7 +991,7 @@ fn percent(ui: &mut egui::Ui, v: &mut f32) {
     }
 }
 
-fn color(ui: &mut egui::Ui, c: &mut Color) {
+pub(crate) fn color(ui: &mut egui::Ui, c: &mut Color) {
     let [r, g, b, a] = c.0;
     let mut c32 = Color32::from_rgba_unmultiplied(r, g, b, a);
     // Сравнение по ответу виджета: круговое преобразование premultiplied ↔ straight неточно при малой альфе.
@@ -1116,7 +1140,7 @@ fn layer_props(ui: &mut egui::Ui, tr: &I18n, l: &mut Layer, i: usize, canvas: Ca
                 paint_props(ui, tr, paint);
                 row(ui, tr.tr("prop-corner-radius"), |ui| px(ui, corner_radius, cw, 0.0..=0.5));
             }
-            Layer::BannerSlot { rect } => rect_props(ui, tr, rect, canvas),
+            Layer::BannerSlot { rect } | Layer::Clip { rect, .. } => rect_props(ui, tr, rect, canvas),
             Layer::Subtitles {
                 rect,
                 font,
@@ -1215,7 +1239,7 @@ fn layer_props(ui: &mut egui::Ui, tr: &I18n, l: &mut Layer, i: usize, canvas: Ca
 }
 
 /// Шрифт: семейство (встроенные, свои, системные — с поиском), начертание из имеющихся у семейства, свой файл.
-fn font_props(ui: &mut egui::Ui, tr: &I18n, font: &mut String, i: usize, pick: &mut Option<FileTarget>) {
+pub(crate) fn font_props(ui: &mut egui::Ui, tr: &I18n, font: &mut String, i: usize, pick: &mut Option<FileTarget>) {
     use sc_raster::fonts::{FontSource, font_name, is_generic, nearest_weight, split_font_name};
     let list = sc_raster::fonts::families();
     let fams = list.as_deref().map_or(&[][..], Vec::as_slice);

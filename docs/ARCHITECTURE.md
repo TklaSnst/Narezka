@@ -64,7 +64,9 @@ crates/
   - `Capsule { logo asset, text, colors, rect }`
   - `Subtitles { style, rect, mode: Static|WordHighlight|Reveal, words_per_line, colors }`
   - `Shape { rect, paint: Solid|Linear, corner_radius }` — плашка, градиент-затемнение
-  - `BannerSlot { rect }` — место под баннер пачки
+  - `BannerSlot { rect }` — место под баннер пачки (его рамка задаёт положение и размер баннера)
+  - `Clip { rect, path, width, height, decoder }` — анимация по кругу (GIF, видео с альфой); в шаблонах не хранится,
+    так рисуется баннер (`Template::with_banner` заменяет первый `BannerSlot` на `Image` или `Clip`, текст — `Text` в конце)
 - `MainVideo.border` (внутрь слоя) и `shadow { color, blur, dx, dy }`; у фонов `Image`/`Video` — `darken`
 - все координаты — в долях холста (0..1), длины (радиусы, толщины, кегль) — в долях ширины холста,
   чтобы шаблон работал при любом выходном разрешении
@@ -72,7 +74,7 @@ crates/
 **Batch** (пачка)
 - `sources[]` (путь, ffprobe-информация, хэш, статус анализа)
 - `template` (ссылка + локальные правки)
-- `banner: Option<{asset, rect, text_layer?}>`
+- `banner: Option<{asset, text?}>` — положение — рамка `BannerSlot` шаблона; `text` — промокод/ссылка рядом (сторона, шрифт, кегль, цвета)
 - `insert_default: Option<asset>`
 - `output: { dir, base_name, container, codec, quality preset/advanced, resolution, fps, conflict_policy, export_metadata, notify }`
 

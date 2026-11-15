@@ -449,3 +449,35 @@ orientation-square = квадратная
 size-kb = { $n } КБ
 size-mb = { $n } МБ
 size-gb = { $n } ГБ
+
+## Баннер пачки
+banner-title = Баннер пачки
+banner-place-hint = Положение и размер — рамка «Место под баннер» на холсте; баннер вписывается в неё.
+banner-none = Без баннера
+banner-missing = ⚠ Баннера пачки нет в библиотеке (удалён или пропал файл) — шортсы будут без него.
+banner-library-empty = В библиотеке нет баннеров и картинок.
+banner-open-library = Открыть библиотеку
+banner-text-on = Текст рядом
+banner-text-hint = Промокод или ссылка — двигается вместе с баннером.
+banner-text-placeholder = Промокод *SHORTS* — скидка 20 %
+banner-side = Где
+banner-side-below = снизу
+banner-side-above = сверху
+banner-side-left = слева
+banner-side-right = справа
+banner-skip-short = Этот шортс — без баннера
+library-use-banner = Сделать баннером пачки
+library-use-banner-hint = Баннер встанет на место «Место под баннер» шаблона на всех шортсах.
+library-is-banner = ✔ Баннер пачки
+library-banner-set = «{ $name }» — баннер пачки.
+
+## Как в прошлый раз
+preset-title = Сделать как в прошлый раз?
+preset-when = Прошлая пачка — { $when }.
+preset-template = Шаблон
+preset-banner = Баннер
+preset-banner-gone = (удалён из библиотеки)
+preset-output = Папка
+preset-dir-default = рядом с исходником
+preset-yes = Да, как в прошлый раз
+preset-no = Нет, заново

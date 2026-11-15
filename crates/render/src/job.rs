@@ -117,6 +117,12 @@ impl RenderJob {
                 }
                 Input::BackgroundVideo { .. } => a.extend(["-stream_loop".into(), "-1".into()]),
                 Input::Subtitles { .. } => a.extend(["-f".into(), "concat".into()]),
+                Input::Clip { decoder, .. } => {
+                    a.extend(["-stream_loop".into(), "-1".into()]);
+                    if let Some(d) = decoder {
+                        a.extend(["-c:v".into(), d.clone()]);
+                    }
+                }
             }
             a.extend(["-i".into(), self.input_path(k + 1, input).display().to_string()]);
         }
@@ -143,7 +149,7 @@ impl RenderJob {
         match input {
             Input::Mask(_) => self.work_dir.join(format!("in{n}.pgm")),
             Input::Sprite { .. } | Input::BackgroundImage { .. } => self.work_dir.join(format!("in{n}.pam")),
-            Input::BackgroundVideo { path } => path.clone(),
+            Input::BackgroundVideo { path } | Input::Clip { path, .. } => path.clone(),
             Input::Subtitles { .. } => self.work_dir.join(format!("in{n}.ffconcat")),
         }
     }
@@ -176,7 +182,7 @@ impl RenderJob {
                     s.as_ref().expect("вход графа есть только у существующего растра").bitmap.to_pam()
                 }
                 Input::BackgroundImage { .. } => art.background.as_ref().expect("фон-картинка растрирована").to_pam(),
-                Input::BackgroundVideo { .. } => continue,
+                Input::BackgroundVideo { .. } | Input::Clip { .. } => continue,
                 Input::Subtitles { layer } => {
                     let seq = &subs.iter().find(|(i, _)| i == layer).expect("вход есть только у слоя с картинками").1;
                     let name = |f: usize| format!("in{}-{f}.png", k + 1);

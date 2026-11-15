@@ -12,8 +12,8 @@ use eframe::egui;
 use eframe::glow;
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use sc_compositor::{ArtSlot, Compositor};
-use sc_raster::LayerArt;
-use sc_core::{Background, Canvas, Layer, SubWord, SubtitleMode, SubtitleTrack, Template};
+use sc_raster::{Bitmap, LayerArt, Sprite};
+use sc_core::{Background, Canvas, Layer, Rect, SubWord, SubtitleMode, SubtitleTrack, Template};
 use sc_mpv::{Event, Format, GetProcAddress, Mpv, Prop};
 
 use crate::raster_worker::{RasterWorker, Rastered};
@@ -23,6 +23,41 @@ use crate::subtitle_worker::{SubKey, SubtitleWorker};
 const SUB_CACHE: usize = 48;
 /// Сколько следующих состояний субтитров рисовать заранее.
 const SUB_AHEAD: usize = 4;
+
+/// Кадров в секунду у анимаций (баннер GIF/видео) в превью.
+const CLIP_FPS: f64 = 30.0;
+/// Память под кадры одной анимации и предел кадров (длинная анимация в превью зациклится раньше, чем в рендере).
+const CLIP_BUDGET: usize = 160 << 20;
+const CLIP_MAX_FRAMES: usize = 600;
+/// Кадры анимации нарезаются для холста не шире этого (превью на экране меньше; композитор растягивает).
+const CLIP_CANVAS_W: f32 = 720.0;
+
+/// Что раскадровано: файл, декодер, размер кадров.
+#[derive(Debug, Clone, PartialEq)]
+struct ClipKey {
+    path: PathBuf,
+    decoder: Option<String>,
+    w: u32,
+    h: u32,
+}
+
+/// Анимации превью: кадры считает фоновый поток, нужный кадр кладётся в композитор подменой растра слоя.
+struct Clips {
+    ready: Vec<(ClipKey, Arc<Vec<Bitmap>>)>,
+    pending: Vec<ClipKey>,
+    failed: Vec<ClipKey>,
+    tx: std::sync::mpsc::Sender<(ClipKey, Result<Vec<Bitmap>, String>)>,
+    rx: std::sync::mpsc::Receiver<(ClipKey, Result<Vec<Bitmap>, String>)>,
+    /// Что лежит в композиторе: (слой, кадры, номер кадра, положение).
+    shown: Vec<(usize, ClipKey, usize, i32, i32)>,
+}
+
+impl Default for Clips {
+    fn default() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self { ready: Vec::new(), pending: Vec::new(), failed: Vec::new(), tx, rx, shown: Vec::new() }
+    }
+}
 
 /// Слова субтитров для превью: шортса или образец (когда речи нет), `fixed_time` — показать момент образца,
 /// а не время плеера.
@@ -103,6 +138,7 @@ pub struct Player {
     dirty: bool,
     subs: Subs,
     sub_worker: SubtitleWorker,
+    clips: Clips,
 }
 
 /// Опции mpv для обоих экземпляров.
@@ -169,6 +205,7 @@ impl Player {
             dirty: true,
             subs: Subs::default(),
             sub_worker: SubtitleWorker::new(cc.egui_ctx.clone()),
+            clips: Clips::default(),
         })
     }
 
@@ -389,6 +426,83 @@ impl Player {
         self.dirty = true;
     }
 
+    /// Анимации (слои `Clip`): кадр по времени от начала шортса — в композитор; кадров ещё нет — раскадровка в фоне.
+    fn pump_clips(&mut self, template: &Template) {
+        while let Ok((key, res)) = self.clips.rx.try_recv() {
+            self.clips.pending.retain(|k| *k != key);
+            match res {
+                Ok(frames) => self.clips.ready.push((key, Arc::new(frames))),
+                Err(e) => {
+                    log::error!("кадры анимации {:?}: {e}", key.path);
+                    self.clips.failed.push(key);
+                }
+            }
+        }
+        let canvas = template.canvas;
+        let s = (CLIP_CANVAS_W / canvas.width as f32).min(1.0);
+        let t = (self.state.time - self.range.map_or(0.0, |r| r.0)).max(0.0);
+        let mut live: Vec<(usize, ClipKey)> = Vec::new();
+        for (i, layer) in template.layers.iter().enumerate() {
+            let Layer::Clip { path, decoder, .. } = layer else { continue };
+            let Some((x, y, w, h)) = sc_raster::clip_rect_px(layer, canvas) else { continue };
+            let scaled = |v: u32| ((v as f32 * s).round() as u32).max(1);
+            let key = ClipKey { path: path.clone(), decoder: decoder.clone(), w: scaled(w), h: scaled(h) };
+            live.push((i, key.clone()));
+            let Some(frames) = self.clips.ready.iter().find(|(k, _)| *k == key).map(|(_, f)| f.clone()) else {
+                // По одной раскадровке за раз: пока слой тянут мышью, размер меняется каждый кадр.
+                if self.clips.pending.is_empty() && !self.clips.failed.contains(&key) {
+                    self.clips.pending.push(key.clone());
+                    let (tx, ctx) = (self.clips.tx.clone(), self.ctx.clone());
+                    std::thread::spawn(move || {
+                        let max = (CLIP_BUDGET / (key.w * key.h * 4) as usize).clamp(1, CLIP_MAX_FRAMES);
+                        let res = sc_media::decode_frames(&key.path, key.decoder.as_deref(), key.w, key.h, CLIP_FPS, max)
+                            .map(|fs| fs.into_iter().map(|f| Bitmap::from_straight(key.w, key.h, f)).collect())
+                            .map_err(|e| e.to_string());
+                        let _ = tx.send((key, res));
+                        ctx.request_repaint();
+                    });
+                }
+                // Пока новых кадров нет, композитор растягивает прежние на новое место.
+                continue;
+            };
+            let idx = (t * CLIP_FPS) as usize % frames.len();
+            let (sx, sy) = ((x as f32 * s).round() as i32, (y as f32 * s).round() as i32);
+            let now = (i, key, idx, sx, sy);
+            if self.clips.shown.contains(&now) {
+                continue;
+            }
+            // Растр в масштабе `s` от начала холста: прямоугольник «для которого нарисован» — тоже в масштабе,
+            // композитор растягивает его ровно на место слоя.
+            let r = layer.rect();
+            let rect = Rect::new(r.x * s, r.y * s, r.w * s, r.h * s);
+            let art = LayerArt { below: None, above: Some(Sprite { x: sx, y: sy, bitmap: frames[idx].clone() }) };
+            if let Err(e) = unsafe { self.comp.set_overlay(&self.gl, i, Some((rect, &art))) } {
+                log::error!("кадр анимации: {e}");
+            }
+            self.clips.shown.retain(|v| v.0 != i);
+            self.clips.shown.push(now);
+            self.dirty = true;
+        }
+        // Слои, которые больше не анимации.
+        let stale: Vec<usize> = self.clips.shown.iter().map(|v| v.0).filter(|i| !live.iter().any(|(j, _)| j == i)).collect();
+        for i in stale {
+            if let Err(e) = unsafe { self.comp.set_overlay(&self.gl, i, None) } {
+                log::error!("кадр анимации: {e}");
+            }
+            self.clips.shown.retain(|v| v.0 != i);
+            self.dirty = true;
+        }
+        // Кадры, которые не нужны ни одному слою, — не дольше, чем есть ещё две свежие раскадровки.
+        while self.clips.ready.len() > live.len() + 2 {
+            match self.clips.ready.iter().position(|(k, _)| !live.iter().any(|(_, l)| l == k)) {
+                Some(p) => {
+                    self.clips.ready.remove(p);
+                }
+                None => break,
+            }
+        }
+    }
+
     /// События mpv и GL-работа (кадры → текстуры → фон → холст). В начале каждого кадра UI.
     pub fn pump(&mut self, frame: &mut eframe::Frame, template: &Template) {
         while let Some(ev) = self.mpv.poll_event() {
@@ -422,6 +536,7 @@ impl Player {
         }
         self.pump_bg();
         self.pump_subtitles(template);
+        self.pump_clips(template);
 
         let gl = self.gl.clone();
         let (w, h) = self.state.size;

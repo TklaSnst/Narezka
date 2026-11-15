@@ -3,6 +3,7 @@
 //! Крейт ни от чего внутри workspace не зависит; источник истины для превью и рендера.
 
 pub mod asset;
+pub mod banner;
 pub mod batch;
 pub mod geometry;
 pub mod library;
@@ -12,7 +13,9 @@ pub mod subtitles;
 pub mod template;
 
 pub use asset::{Asset, AssetId, AssetKind, AssetMeta, History, Orientation, Usage, parse_tags, suggest_kind};
+pub use banner::{Banner, BannerArt, BannerSide, BannerText, DEFAULT_BANNER_RECT, alpha_decoder, fit_rect};
 pub use batch::{
+    BatchPreset,
     Batch, BatchError, Codec, ConflictPolicy, Container, EncoderPref, MediaInfo, OutputSettings,
     MIN_SPLIT, Short, ShortFlag, ShortId, ShortStatus, Source, SourceId, SourceStatus, TimeRange,
 };

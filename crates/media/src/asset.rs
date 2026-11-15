@@ -169,6 +169,63 @@ pub fn thumbnail(src: &Path, meta: &AssetMeta, dest: &Path, max: u32) -> Result<
     Ok(())
 }
 
+/// Кадры анимации (GIF, видео) для превью: RGBA с обычной альфой, `w`×`h`, ровно `fps` кадров в секунду,
+/// один проход, не больше `max_frames`. `decoder` — декодер с альфой (`libvpx-vp9`); не сработал — повтор без него.
+pub fn decode_frames(src: &Path, decoder: Option<&str>, w: u32, h: u32, fps: f64, max_frames: usize) -> Result<Vec<Vec<u8>>, MediaError> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let frame = (w * h * 4) as usize;
+    let run = |decoder: Option<&str>| -> Result<(Vec<Vec<u8>>, String), MediaError> {
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-v", "error", "-nostdin"]);
+        if let Some(d) = decoder {
+            cmd.args(["-c:v", d]);
+        }
+        cmd.arg("-i").arg(src).args([
+            "-an",
+            "-frames:v",
+            &max_frames.to_string(),
+            "-vf",
+            &format!("fps={fps:.4},scale={w}:{h}:flags=lanczos,format=rgba"),
+            "-f",
+            "rawvideo",
+            "-",
+        ]);
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|source| MediaError::Spawn { tool: "ffmpeg", source })?;
+        let mut err = child.stderr.take().expect("stderr piped");
+        let err_t = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = err.read_to_string(&mut s);
+            s
+        });
+        let mut out = child.stdout.take().expect("stdout piped");
+        let mut frames = Vec::new();
+        loop {
+            let mut buf = vec![0u8; frame];
+            match out.read_exact(&mut buf) {
+                Ok(()) => frames.push(buf),
+                Err(_) => break,
+            }
+        }
+        let _ = child.wait();
+        Ok((frames, err_t.join().unwrap_or_default()))
+    };
+    let (mut frames, mut stderr) = run(decoder)?;
+    if frames.is_empty() && decoder.is_some() {
+        log::warn!("кадры {} через {decoder:?}: {} — без него", src.display(), stderr.trim());
+        (frames, stderr) = run(None)?;
+    }
+    if frames.is_empty() {
+        return Err(MediaError::Failed { tool: "ffmpeg", stderr });
+    }
+    Ok(frames)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

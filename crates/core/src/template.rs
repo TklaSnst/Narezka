@@ -196,8 +196,19 @@ pub enum Layer {
         #[serde(default)]
         corner_radius: f32,
     },
-    /// Место под баннер пачки (этап 5).
+    /// Место под баннер пачки ([`Template::with_banner`]).
     BannerSlot { rect: Rect },
+    /// Анимация по кругу (GIF, видео с альфой) «вписать» в `rect`; `width`×`height` — размер её кадра.
+    /// В шаблонах не хранится — так рисуется анимированный баннер ([`Template::with_banner`]).
+    Clip {
+        rect: Rect,
+        path: PathBuf,
+        width: u32,
+        height: u32,
+        /// Декодер ffmpeg, сохраняющий прозрачность (`libvpx-vp9`); `None` — по умолчанию.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decoder: Option<String>,
+    },
     /// Субтитры из транскрипции шортса: фразы по `lines` строк до `words_per_line` слов.
     Subtitles {
         rect: Rect,
@@ -276,6 +287,7 @@ impl Layer {
             | Layer::Capsule { rect, .. }
             | Layer::Shape { rect, .. }
             | Layer::BannerSlot { rect }
+            | Layer::Clip { rect, .. }
             | Layer::Subtitles { rect, .. } => *rect,
         }
     }
@@ -438,6 +450,11 @@ impl Template {
                     }
                 }
                 Layer::BannerSlot { rect: r } => rect(r, "rect")?,
+                Layer::Clip { rect: r, path, width, height, .. } => {
+                    rect(r, "rect")?;
+                    value(!path.as_os_str().is_empty(), "path")?;
+                    value(*width > 0 && *height > 0, "size")?;
+                }
                 Layer::Subtitles { rect: r, font, size, words_per_line, lines, outline, shadow: sh, .. } => {
                     rect(r, "rect")?;
                     value(!font.is_empty(), "font")?;

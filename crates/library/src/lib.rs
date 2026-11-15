@@ -411,6 +411,14 @@ mod tests {
         let thumb = std::fs::read(thumb_path(dir.path(), webm.id)).unwrap();
         assert!(thumb.starts_with(b"\x89PNG"));
 
+        // Кадры для превью баннера: VP9 с альфой через libvpx — полупрозрачные, GIF — ровно fps × длительность.
+        let dec = sc_core::alpha_decoder(&webm.meta.codec, webm.meta.alpha);
+        let frames = sc_media::decode_frames(&lib.path(&webm), dec, 50, 100, 10.0, 100).unwrap();
+        assert_eq!((frames.len(), frames[0].len()), (10, 50 * 100 * 4));
+        assert!((60..=100).contains(&frames[0][3]), "альфа {}", frames[0][3]);
+        let frames = sc_media::decode_frames(&lib.path(&gif), None, 80, 60, 20.0, 15).unwrap();
+        assert_eq!(frames.len(), 15, "не больше max_frames");
+
         let before: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
         assert!(matches!(stage(dir.path(), Path::new(&p("broken.png")), |_| false), Err(LibraryError::Media(_))));
         let after: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();

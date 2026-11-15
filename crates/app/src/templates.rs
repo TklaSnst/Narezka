@@ -57,7 +57,7 @@ fn same_look(a: &Template, b: &Template) -> bool {
 
 impl App {
     /// Подпись шаблона библиотеки.
-    fn template_label(&self, r: &TemplateRef) -> String {
+    pub(crate) fn template_label(&self, r: &TemplateRef) -> String {
         match r {
             TemplateRef::Builtin(id) => self.i18n.tr(&format!("template-{id}")),
             TemplateRef::User(id) => self.templates.user(id).map_or_else(|| id.clone(), |u| u.template.name.clone()),

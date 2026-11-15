@@ -206,6 +206,9 @@ pub struct Usage {
 pub struct History {
     #[serde(default, rename = "use", skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<Usage>,
+    /// Настройки последней отрендеренной пачки — для «Сделать как в прошлый раз?».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_batch: Option<crate::batch::BatchPreset>,
 }
 
 impl History {
@@ -316,6 +319,15 @@ mod tests {
         let text = toml::to_string_pretty(&h).unwrap();
         assert!(text.contains("[[use]]"), "{text}");
         assert_eq!(toml::from_str::<History>(&text).unwrap(), h);
+        // С настройками прошлой пачки (шаблон с массивами слоёв после массива записей).
+        let banner = crate::Banner { asset: a, text: Some(crate::BannerText { content: "код".into(), ..Default::default() }) };
+        let batch = crate::Batch { banner: Some(banner), ..Default::default() };
+        h.last_batch = Some(batch.preset(42));
+        let text = toml::to_string_pretty(&h).unwrap();
+        assert_eq!(toml::from_str::<History>(&text).unwrap(), h);
+        let mut fresh = crate::Batch::default();
+        fresh.apply_preset(h.last_batch.as_ref().unwrap());
+        assert_eq!((fresh.banner, fresh.template), (batch.banner, batch.template));
         assert_eq!(toml::from_str::<History>("").unwrap(), History::default());
 
         h.forget(a);

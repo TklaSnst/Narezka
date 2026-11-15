@@ -1,6 +1,7 @@
 //! ShortsCutter — точка входа: окно, вкладки, фоновые задачи.
 
 mod analysis;
+mod banner;
 mod cut;
 mod design;
 mod editor;
@@ -31,7 +32,7 @@ use player::Player;
 use templates::Library;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
+pub(crate) enum Tab {
     Import,
     Cut,
     Design,
@@ -82,6 +83,8 @@ struct App {
     assets: sc_library::Library,
     history: sc_core::History,
     lib: library::LibraryState,
+    /// Предложить «Сделать как в прошлый раз?» (новая пачка, есть прошлая).
+    preset_offer: bool,
 }
 
 impl App {
@@ -100,12 +103,16 @@ impl App {
             }
         };
         jobs.spawn(|| Msg::Caps(Capabilities::detect()));
+        let history = sc_library::load_history(&paths.history_file());
+        // Шаблон из SC_TEMPLATE — проверка шаблона, прошлое не предлагается.
+        let preset_offer = history.last_batch.is_some() && batch.template_ref.is_some();
         Self {
             i18n: I18n::new(settings.language),
             analysis: AnalysisState::new(&settings),
             templates: Library::new(UserTemplates::new(paths.templates_dir())),
             assets: sc_library::Library::open(paths.library_dir()),
-            history: sc_library::load_history(&paths.history_file()),
+            history,
+            preset_offer,
             lib: Default::default(),
             paths,
             settings,
@@ -264,7 +271,11 @@ impl eframe::App for App {
         self.cut_sync();
         self.design_sync_target();
         // Подстановки — по выбранному шортсу; шаблон — его (или тот, что правится на «Оформлении»).
-        let template = self.player.is_some().then(|| self.preview_template(self.tab == Tab::Design).with_vars(&templates::preview_vars(self)));
+        // Баннер — пачки или выбранного шортса («без баннера» у шортса видно сразу).
+        let template = self.player.is_some().then(|| {
+            let banner = self.banner_art(self.cut.selected);
+            self.preview_template(self.tab == Tab::Design).with_banner(banner.as_ref()).with_vars(&templates::preview_vars(self))
+        });
         let design = self.tab == Tab::Design;
         let subs = template.as_ref().filter(|t| t.has_subtitles()).and_then(|_| self.subtitle_input(design));
         if let (Some(p), Some(template)) = (&mut self.player, template) {
@@ -320,6 +331,7 @@ impl eframe::App for App {
             Tab::Library => self.library_ui(ui),
             Tab::Settings => self.settings_ui(ui),
         });
+        self.preset_dialog(&ui.ctx().clone());
         if let Some(p) = &self.player {
             p.end_frame();
         }

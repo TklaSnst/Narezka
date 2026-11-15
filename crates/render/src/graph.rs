@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use sc_core::{Background, Canvas, Layer, Template, background_crop, main_video_crop_px};
-use sc_raster::{Art, Sprite, video_rect_px};
+use sc_raster::{Art, Sprite, clip_rect_px, video_rect_px};
 
 /// Во сколько раз фон меньше холста (как в превью, `sc_compositor::BLUR_DIVISOR`).
 pub const BLUR_DIVISOR: u32 = 4;
@@ -39,6 +39,8 @@ pub enum Input {
     BackgroundVideo { path: PathBuf },
     /// Субтитры слоя `layer`: concat-список картинок с длительностями ([`crate::subtitles::SubtitleSeq`]).
     Subtitles { layer: usize },
+    /// Анимация слоя `Clip` (GIF, видео с альфой) по кругу; `decoder` — декодер, сохраняющий альфу.
+    Clip { path: PathBuf, decoder: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -163,6 +165,14 @@ pub fn build(template: &Template, art: &Art, subtitles: &[(usize, i32, i32)], p:
         if let Some((x, y)) = sprite(&la.above) {
             let n = add_input(&mut inputs, Input::Sprite { layer: i, above: true });
             overlay(&mut chains, &mut base, format!("[{n}:v]"), x, y, false);
+        }
+        if let Layer::Clip { path, decoder, .. } = layer
+            && let Some((x, y, w, h)) = clip_rect_px(layer, canvas)
+        {
+            // Вход бесконечный (по кругу) — наложение заканчивается вместе с базой.
+            let n = add_input(&mut inputs, Input::Clip { path: path.clone(), decoder: decoder.clone() });
+            chains.push(format!("[{n}:v]fps={out_fps},scale={w}:{h}:flags=lanczos,format=yuva420p[c{i}]"));
+            overlay(&mut chains, &mut base, format!("[c{i}]"), x, y, true);
         }
         if let Some(&(_, x, y)) = subtitles.iter().find(|s| s.0 == i) {
             // Картинка держится до следующей (repeatlast) — переменная частота входа не важна.
@@ -342,6 +352,25 @@ mod tests {
         assert_eq!(g.inputs, vec![Input::Subtitles { layer: 1 }]);
         assert!(g.filter.contains("[base1][1:v]overlay=40:1200[base2]"), "{}", g.filter);
         assert!(g.filter.ends_with("[base2]setsar=1,format=yuv420p[out]"), "{}", g.filter);
+    }
+
+    #[test]
+    fn animated_banner_loops_scaled_into_its_place() {
+        let mut t = Template::minimal();
+        t.layers.push(Layer::BannerSlot { rect: Rect::new(0.1, 0.7, 0.8, 0.1) });
+        let art = sc_core::BannerArt {
+            path: "/lib/b.webm".into(),
+            size: (600, 200),
+            animated: true,
+            decoder: Some("libvpx-vp9".into()),
+            text: None,
+        };
+        let t = t.with_banner(Some(&art));
+        let g = graph(&t, &params((1920, 1080)));
+        assert_eq!(g.inputs, vec![Input::Clip { path: "/lib/b.webm".into(), decoder: Some("libvpx-vp9".into()) }]);
+        // рамка 864×192 → 576×192 по центру
+        assert!(g.filter.contains("[1:v]fps=60,scale=576:192:flags=lanczos,format=yuva420p[c1]"), "{}", g.filter);
+        assert!(g.filter.contains("[base1][c1]overlay=252:1344:shortest=1[base2]"), "{}", g.filter);
     }
 
     #[test]

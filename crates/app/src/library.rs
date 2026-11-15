@@ -249,7 +249,7 @@ impl App {
     }
 
     /// Миниатюра, вписанная в `area` (с шахматкой под прозрачным); у шрифта — образец «Аа» системным шрифтом egui.
-    fn paint_preview(&mut self, ui: &egui::Ui, painter: &egui::Painter, area: Rect, a: &Asset) {
+    pub(crate) fn paint_preview(&mut self, ui: &egui::Ui, painter: &egui::Painter, area: Rect, a: &Asset) {
         painter.rect_filled(area, 4.0, Color32::from_gray(24));
         if a.kind == AssetKind::Font || a.meta.width == 0 {
             painter.text(area.center(), egui::Align2::CENTER_CENTER, "Аа", egui::FontId::proportional(area.height() * 0.4), Color32::from_gray(210));
@@ -341,6 +341,15 @@ impl App {
                 self.library_result(r);
             }
         });
+        if matches!(a.kind, AssetKind::Banner | AssetKind::Image) {
+            let current = self.batch.banner.as_ref().is_some_and(|b| b.asset == id);
+            if current {
+                ui.label(self.i18n.tr("library-is-banner"));
+            } else if ui.button(self.i18n.tr("library-use-banner")).on_hover_text(self.i18n.tr("library-use-banner-hint")).clicked() {
+                self.set_banner(Some(id));
+                self.lib.message = Some((false, self.i18n.tr_args("library-banner-set", &[("name", a.name.clone().into())])));
+            }
+        }
         if a.kind == AssetKind::Insert {
             let mut hide = a.hide_banner;
             if ui.checkbox(&mut hide, self.i18n.tr("library-hide-banner")).changed() {

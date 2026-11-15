@@ -37,6 +37,20 @@ impl Bitmap {
         Self { width, height, data: vec![0; (width * height * 4) as usize] }
     }
 
+    /// Из RGBA с обычной альфой (кадры ffmpeg `-pix_fmt rgba`).
+    pub fn from_straight(width: u32, height: u32, mut data: Vec<u8>) -> Self {
+        debug_assert_eq!(data.len(), (width * height * 4) as usize);
+        for px in data.as_chunks_mut::<4>().0 {
+            let a = px[3] as u32;
+            if a < 255 {
+                for c in &mut px[..3] {
+                    *c = ((*c as u32 * a + 127) / 255) as u8;
+                }
+            }
+        }
+        Self { width, height, data }
+    }
+
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * self.width + x) * 4) as usize;
         self.data[i..i + 4].try_into().unwrap()
@@ -283,22 +297,37 @@ pub fn layer(layer: &Layer, canvas: Canvas) -> Result<LayerArt, RasterError> {
             let logo = logo.as_deref().map(open).transpose()?;
             LayerArt { below: None, above: Some(Sprite { x, y, bitmap: capsule(w, h, logo.as_ref(), text, font, *text_color, *fill) }) }
         }
-        // Место баннера — этап 5; субтитры зависят от времени — см. [`subtitle_art`].
-        Layer::BannerSlot { .. } | Layer::Subtitles { .. } => LayerArt::default(),
+        // Пустое место под баннер не рисуется; субтитры зависят от времени — см. [`subtitle_art`];
+        // кадры анимации — у превью и рендера свои (см. [`clip_rect_px`]).
+        Layer::BannerSlot { .. } | Layer::Subtitles { .. } | Layer::Clip { .. } => LayerArt::default(),
     })
+}
+
+/// Размер картинки `iw`×`ih`, вписанной в `w`×`h` с сохранением пропорций, и её сдвиг до центра.
+pub fn fit_px(iw: u32, ih: u32, w: u32, h: u32) -> (u32, u32, i32, i32) {
+    let (iw, ih) = (iw.max(1) as f32, ih.max(1) as f32);
+    let k = (w as f32 / iw).min(h as f32 / ih);
+    let (sw, sh) = (((iw * k).round() as u32).clamp(1, w), ((ih * k).round() as u32).clamp(1, h));
+    (sw, sh, (w - sw) as i32 / 2, (h - sh) as i32 / 2)
+}
+
+/// Где на холсте кадры слоя-анимации `Clip`: (x, y, ширина, высота) в пикселях холста — так же, как картинка.
+pub fn clip_rect_px(layer: &Layer, canvas: Canvas) -> Option<(i32, i32, u32, u32)> {
+    let Layer::Clip { rect, width, height, .. } = layer else { return None };
+    let (x, y, w, h) = rect_px(*rect, canvas);
+    let (sw, sh, ox, oy) = fit_px(*width, *height, w, h);
+    Some((x + ox, y + oy, sw, sh))
 }
 
 /// Картинка, вписанная в `w`×`h` с сохранением пропорций, и её сдвиг до центра прямоугольника.
 fn fit_image(img: &image::RgbaImage, w: u32, h: u32, opacity: f32) -> (Bitmap, i32, i32) {
-    let (iw, ih) = (img.width() as f32, img.height() as f32);
-    let k = (w as f32 / iw).min(h as f32 / ih);
-    let (sw, sh) = (((iw * k).round() as u32).clamp(1, w), ((ih * k).round() as u32).clamp(1, h));
+    let (sw, sh, ox, oy) = fit_px(img.width(), img.height(), w, h);
     let scaled = image::imageops::resize(img, sw, sh, FilterType::CatmullRom);
     let mut bm = Bitmap::new(sw, sh);
     for (px, py, p) in scaled.enumerate_pixels() {
         bm.set(px, py, premul(Color(p.0)).map(|v| v * opacity));
     }
-    (bm, (w - sw) as i32 / 2, (h - sh) as i32 / 2)
+    (bm, ox, oy)
 }
 
 /// Текстовый слой: прямоугольник `(x, y, w, h)` с полями под обводку, вылезающие глифы и тень;

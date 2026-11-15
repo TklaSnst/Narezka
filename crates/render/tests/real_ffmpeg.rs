@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
-use sc_core::{AccentMode, Align, Background, Border, Color, Layer, OutputSettings, Paint, Rect, Shadow, SubWord, SubtitleMode, Template, VAlign};
+use sc_core::{AccentMode, Align, Background, BannerArt, BannerSide, BannerText, Border, Color, Layer, OutputSettings, Paint, Rect, Shadow, SubWord, SubtitleMode, Template, VAlign};
 use sc_render::{Encoder, RenderError, RenderJob};
 
 fn ffmpeg(args: &[&str]) -> Option<String> {
@@ -183,4 +183,74 @@ fn renders_subtitles_in_sync() {
     assert!(y2 > 500 && w2 > 500 && y2 != y1, "подсветка перешла на «два.»: {y2} {w2}");
     let (y, w) = count(2.5);
     assert!(y == 0 && w == 0, "после фразы пусто: {y} {w}");
+}
+
+/// Баннер: картинка с прозрачностью и текст рядом; анимация (VP9 с альфой) по кругу в такт выводу.
+#[test]
+fn renders_banners() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = |n: &str| tmp.path().join(n);
+    let made = ffmpeg(&[
+        "-f", "lavfi", "-i", "color=c=black:s=640x360:r=30:d=4",
+        "-c:v", "libx264", "-preset", "ultrafast", p("src.mp4").to_str().unwrap(),
+    ]);
+    let png = ffmpeg(&["-f", "lavfi", "-i", "color=c=red@0.5:s=400x100,format=rgba", "-frames:v", "1", p("b.png").to_str().unwrap()]);
+    // 0.5 с красного, 0.5 с зелёного, непрозрачные; по кругу — период 1 с.
+    let webm = ffmpeg(&[
+        "-f", "lavfi", "-i", "color=c=red:s=400x100:r=30:d=0.5",
+        "-f", "lavfi", "-i", "color=c=lime:s=400x100:r=30:d=0.5",
+        "-filter_complex", "[0][1]concat=n=2,format=yuva420p",
+        "-c:v", "libvpx-vp9", "-auto-alt-ref", "0", p("b.webm").to_str().unwrap(),
+    ]);
+    if made.is_none() || png.is_none() || webm.is_none() {
+        eprintln!("ffmpeg с libx264/libvpx недоступен — тест пропущен");
+        return;
+    }
+    let slot = Rect::new(0.1, 0.05, 0.8, 0.1);
+    let mut j = job(tmp.path(), &p("src.mp4"), "png.mp4");
+    j.has_audio = false;
+    j.end = 3.0;
+    j.template.background = Background::Color { color: Color::BLACK };
+    j.template.layers.push(Layer::BannerSlot { rect: slot });
+    let base = j.template.clone();
+    let text = BannerText { content: "SHORTS".into(), side: BannerSide::Below, ..Default::default() };
+    let art = BannerArt { path: p("b.png"), size: (400, 100), animated: false, decoder: None, text: Some(text) };
+    j.template = base.with_banner(Some(&art));
+    j.run(&AtomicBool::new(false), |_| {}).unwrap();
+    // Рамка 864×192 → картинка 768×192 по центру (x 156…924, y 96…288): полупрозрачный красный на чёрном.
+    let px = frame_rgb(&j.dest, 1.0, (300, 150, 400, 80));
+    assert!(px.iter().all(|c| (110..=145).contains(&c[0]) && c[1] < 20 && c[2] < 20), "{:?}", &px[..3]);
+    // Под баннером — белый текст.
+    let below = frame_rgb(&j.dest, 1.0, (156, 300, 768, 70));
+    let white = below.iter().filter(|c| c.iter().all(|&v| v > 220)).count();
+    assert!(white > 1000, "текст под баннером: {white}");
+
+    let mut j2 = job(tmp.path(), &p("src.mp4"), "webm.mp4");
+    j2.has_audio = false;
+    j2.end = 3.0;
+    let art = BannerArt { path: p("b.webm"), size: (400, 100), animated: true, decoder: Some("libvpx-vp9".into()), text: None };
+    j2.template = base.with_banner(Some(&art));
+    j2.run(&AtomicBool::new(false), |_| {}).unwrap();
+    let color_at = |t: f64| {
+        let px = frame_rgb(&j2.dest, t, (500, 180, 80, 40));
+        let n = px.len() as u32;
+        let avg = |k: usize| px.iter().map(|c| c[k] as u32).sum::<u32>() / n;
+        (avg(0), avg(1))
+    };
+    // 0.25 и 1.25 — красный (второй круг), 0.75 и 1.75 — зелёный.
+    for t in [0.25, 1.25, 2.25] {
+        let (r, g) = color_at(t);
+        assert!(r > 200 && g < 60, "t={t}: {r} {g}");
+    }
+    for t in [0.75, 1.75] {
+        let (r, g) = color_at(t);
+        assert!(r < 60 && g > 200, "t={t}: {r} {g}");
+    }
+    let dur = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
+        .arg(&j2.dest)
+        .output()
+        .unwrap();
+    let d: f64 = String::from_utf8_lossy(&dur.stdout).trim().parse().unwrap();
+    assert!((d - 2.5).abs() < 0.1, "длительность как у отрезка: {d}");
 }

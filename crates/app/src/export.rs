@@ -77,7 +77,10 @@ impl App {
                     has_audio: info.has_audio,
                     start: short.start,
                     end: short.end,
-                    template: batch.template_for(id).with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() }),
+                    template: batch
+                        .template_for(id)
+                        .with_banner(self.banner_art(Some(id)).as_ref())
+                        .with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() }),
                     subtitles: self
                         .transcript_of(short.source_id)
                         .map(|t| crate::subtitles::short_words(&t, short))
@@ -222,7 +225,11 @@ impl App {
         } else {
             let n = jobs.len() as i64;
             let start = egui::Button::new(self.i18n.tr_args("export-start", &[("n", n.into())]));
+            if self.banner_missing() {
+                ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr("banner-missing"));
+            }
             if ui.add_enabled(n > 0, start).clicked() {
+                self.remember_batch();
                 self.start_render(jobs);
                 return;
             }

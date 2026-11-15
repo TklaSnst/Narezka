@@ -8,7 +8,7 @@ pub mod hash;
 pub mod probe;
 mod process;
 
-pub use asset::{probe_asset, thumbnail};
+pub use asset::{decode_frames, probe_asset, thumbnail};
 pub use caps::{Capabilities, EncoderInfo, EncoderKind};
 pub use hash::quick_hash;
 pub use probe::probe;

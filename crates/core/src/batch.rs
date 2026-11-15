@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::library::{self, DEFAULT_BUILTIN, TemplateRef};
+use crate::subtitles::SubtitleEdits;
 use crate::template::{Canvas, Template};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -152,6 +153,9 @@ pub struct Short {
     /// Локальные правки: свой шаблон шортса вместо шаблона пачки.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<Template>,
+    /// Ручные правки субтитров (ключевые слова).
+    #[serde(default, skip_serializing_if = "SubtitleEdits::is_empty")]
+    pub subtitles: SubtitleEdits,
 }
 
 impl Short {
@@ -170,6 +174,7 @@ impl Short {
             flags: Vec::new(),
             auto: false,
             template: None,
+            subtitles: SubtitleEdits::default(),
         }
     }
 
@@ -477,6 +482,11 @@ impl Batch {
         for k in &next.keywords {
             if !merged.keywords.contains(k) {
                 merged.keywords.push(k.clone());
+            }
+        }
+        for &w in &next.subtitles.toggled {
+            if !merged.subtitles.toggled.contains(&w) {
+                merged.subtitles.toggled.push(w);
             }
         }
         for f in &next.flags {

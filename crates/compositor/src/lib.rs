@@ -39,6 +39,8 @@ struct GpuArt {
     background: Option<GpuSprite>,
     /// По слоям шаблона; `None` — растра нет (ещё не готов).
     layers: Vec<Option<GpuLayer>>,
+    /// Растры, которые рисуются вместо растра слоя с этим индексом (субтитры — по времени).
+    overlays: Vec<(usize, GpuLayer)>,
 }
 
 /// Что положить на место слоя в [`Compositor::set_layers`].
@@ -229,6 +231,29 @@ impl Compositor {
         result
     }
 
+    /// Растр, который рисуется вместо растра слоя `index` (субтитры в текущий момент); `None` — убрать подмену.
+    /// [`Compositor::set_layers`] подмены не трогает.
+    ///
+    /// # Safety
+    /// GL-контекст должен быть текущим.
+    pub unsafe fn set_overlay(&mut self, gl: &glow::Context, index: usize, art: Option<(Rect, &LayerArt)>) -> Result<(), String> {
+        let old: Vec<Option<GpuLayer>> = self
+            .art
+            .overlays
+            .extract_if(.., |(i, _)| *i == index)
+            .map(|(_, l)| Some(l))
+            .collect();
+        unsafe { delete_layers(gl, old) };
+        let Some((rect, art)) = art else { return Ok(()) };
+        let sprite = |s: &Option<Sprite>| -> Result<Option<GpuSprite>, String> {
+            s.as_ref().map(|s| unsafe { upload(gl, &s.bitmap, s.x, s.y) }).transpose()
+        };
+        let below = sprite(&art.below)?;
+        let above = sprite(&art.above)?;
+        self.art.overlays.push((index, GpuLayer { rect, below, above }));
+        Ok(())
+    }
+
     /// Собрать холст в текстуру `w`×`h` пикселей (размер на экране). Возвращает текстуру и `true`,
     /// если она пересоздана (тогда её надо заново зарегистрировать в egui).
     ///
@@ -298,7 +323,10 @@ impl Compositor {
 
         let scale = w as f32 / cw;
         for (i, layer) in template.layers.iter().enumerate() {
-            let art = self.art.layers.get(i).and_then(Option::as_ref);
+            let art = match self.art.overlays.iter().find(|(k, _)| *k == i) {
+                Some((_, l)) => Some(l),
+                None => self.art.layers.get(i).and_then(Option::as_ref),
+            };
             let map = art.filter(|a| a.rect != layer.rect() && a.rect.w > 0.0 && a.rect.h > 0.0).map(|a| {
                 let to_px = |r: Rect| Rect::new(r.x * cw, r.y * ch, r.w * cw, r.h * ch);
                 (to_px(a.rect), to_px(layer.rect()))
@@ -329,6 +357,7 @@ impl Compositor {
         unsafe {
             let _ = self.set_background_art(gl, None);
             delete_layers(gl, std::mem::take(&mut self.art.layers));
+            delete_layers(gl, std::mem::take(&mut self.art.overlays).into_iter().map(|(_, l)| Some(l)).collect());
         }
     }
 

@@ -10,6 +10,8 @@ mod import;
 mod jobs;
 mod player;
 mod raster_worker;
+mod subtitle_worker;
+mod subtitles;
 mod templates;
 mod timeline;
 
@@ -73,6 +75,7 @@ struct App {
     analysis: AnalysisState,
     /// Свои шаблоны пользователя.
     templates: Library,
+    subtitle_cache: subtitles::SubtitleCache,
 }
 
 impl App {
@@ -109,6 +112,7 @@ impl App {
             cut: CutState::default(),
             design: DesignState::default(),
             export: ExportState::default(),
+            subtitle_cache: Default::default(),
         }
     }
 
@@ -245,7 +249,10 @@ impl eframe::App for App {
         self.design_sync_target();
         // Подстановки — по выбранному шортсу; шаблон — его (или тот, что правится на «Оформлении»).
         let template = self.player.is_some().then(|| self.preview_template(self.tab == Tab::Design).with_vars(&templates::preview_vars(self)));
+        let design = self.tab == Tab::Design;
+        let subs = template.as_ref().filter(|t| t.has_subtitles()).and_then(|_| self.subtitle_input(design));
         if let (Some(p), Some(template)) = (&mut self.player, template) {
+            p.set_subtitles(subs);
             // Превью играет только на вкладках с ним.
             if !matches!(self.tab, Tab::Cut | Tab::Design) {
                 p.set_paused(true);

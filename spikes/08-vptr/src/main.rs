@@ -23,6 +23,7 @@ impl Dispatch<ZwlrVirtualPointerV1, ()> for S {
 }
 
 const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 
 fn main() {
     let args: Vec<u32> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
@@ -42,7 +43,8 @@ fn main() {
         q.roundtrip(&mut S).unwrap();
     };
     let mv = |x: f64, y: f64| p.motion_absolute(now(), x.round() as u32, y.round() as u32, w, h);
-    let btn = |down: bool| p.button(now(), BTN_LEFT, if down { wl_pointer::ButtonState::Pressed } else { wl_pointer::ButtonState::Released });
+    let btn_of = |b: u32, down: bool| p.button(now(), b, if down { wl_pointer::ButtonState::Pressed } else { wl_pointer::ButtonState::Released });
+    let btn = |down: bool| btn_of(BTN_LEFT, down);
     let pause = |ms: u64| std::thread::sleep(Duration::from_millis(ms));
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
@@ -62,6 +64,15 @@ fn main() {
                 send(&|| btn(true));
                 pause(60);
                 send(&|| btn(false));
+            }
+            // Правая кнопка.
+            Some("rclick") => {
+                pos = (n(1), n(2));
+                send(&|| mv(pos.0, pos.1));
+                pause(50);
+                send(&|| btn_of(BTN_RIGHT, true));
+                pause(60);
+                send(&|| btn_of(BTN_RIGHT, false));
             }
             Some("drag") => {
                 let (x0, y0, x1, y1) = (n(1), n(2), n(3), n(4));

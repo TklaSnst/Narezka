@@ -790,7 +790,12 @@ impl App {
         }
 
         let zones = self.zones(source);
-        let selected = self.cut.selected.and_then(|id| self.batch.short(id)).map(|s| (s.start, s.end));
+        let selected_short = self.cut.selected.and_then(|id| self.batch.short(id));
+        let selected = selected_short.map(|s| (s.start, s.end));
+        // Ключевые слова субтитров выбранного шортса — подчёркнуты.
+        let keywords: Vec<f64> = selected_short
+            .map(|s| crate::subtitles::short_words(&t, s).into_iter().filter(|w| w.keyword).map(|w| w.start).collect())
+            .unwrap_or_default();
         let accepted: Vec<(f64, f64)> = (self.batch.shorts_of(source).into_iter())
             .filter(|s| s.status == ShortStatus::Accepted)
             .map(|s| (s.start, s.end))
@@ -804,6 +809,7 @@ impl App {
         let visuals = ui.visuals().clone();
 
         let mut clicked = None;
+        let mut toggled = None;
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)));
         child.set_clip_rect(rect);
         for seg in &segs[self.cut.text_first..(self.cut.text_first + TEXT_LINES).min(segs.len())] {
@@ -823,11 +829,18 @@ impl App {
                         text = text.strikethrough().color(visuals.weak_text_color());
                     } else if inside(selected, mid) {
                         text = text.strong().color(Color32::WHITE);
+                        if keywords.contains(&w.start) {
+                            text = text.underline();
+                        }
                     } else if !accepted.iter().any(|&r| inside(Some(r), mid)) {
                         text = text.color(visuals.weak_text_color());
                     }
-                    if ui.add(egui::Label::new(text).sense(Sense::click())).clicked() {
+                    let r = ui.add(egui::Label::new(text).sense(Sense::click()));
+                    if r.clicked() {
                         clicked = Some(i);
+                    }
+                    if r.secondary_clicked() && inside(selected, mid) {
+                        toggled = Some(i);
                     }
                 }
             });
@@ -835,6 +848,14 @@ impl App {
         ui.weak(self.i18n.tr("cut-text-hint"));
         if let Some(i) = clicked {
             self.click_word(&t, i);
+        }
+        if let Some(i) = toggled
+            && let Some(mut s) = self.cut.selected.and_then(|id| self.batch.short(id)).cloned()
+        {
+            s.subtitles.toggle(t.words[i].start);
+            if let Err(e) = self.batch.update_short(s) {
+                log::warn!("пометка ключевого слова: {e}");
+            }
         }
     }
 }

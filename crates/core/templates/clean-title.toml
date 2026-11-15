@@ -30,3 +30,17 @@ dest = { x = 0.06, y = 0.41, w = 0.88, h = 0.2784 }
 corner_radius = 0.025
 border = { width = 0.003, color = "#6c63c9" }
 shadow = { color = "#000000a0", blur = 0.025, dy = 0.01 }
+
+# Субтитры «проявлением»: сказанные — белым, текущее — цветом акцента, несказанные — серым.
+[[layers]]
+type = "subtitles"
+rect = { x = 0.08, y = 0.70, w = 0.76, h = 0.065 }
+font = "Montserrat ExtraBold"
+size = 0.055
+color = "#ffffff"
+active_color = "#e5483f"
+keyword_color = "#ffd60a"
+dim_color = "#ffffff50"
+mode = "reveal"
+words_per_line = 3
+lines = 1

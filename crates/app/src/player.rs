@@ -12,10 +12,43 @@ use eframe::egui;
 use eframe::glow;
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use sc_compositor::{ArtSlot, Compositor};
-use sc_core::{Background, Canvas, Layer, Template};
+use sc_raster::LayerArt;
+use sc_core::{Background, Canvas, Layer, SubWord, SubtitleMode, SubtitleTrack, Template};
 use sc_mpv::{Event, Format, GetProcAddress, Mpv, Prop};
 
 use crate::raster_worker::{RasterWorker, Rastered};
+use crate::subtitle_worker::{SubKey, SubtitleWorker};
+
+/// Сколько готовых растров субтитров держать (текущие и упреждение).
+const SUB_CACHE: usize = 48;
+/// Сколько следующих состояний субтитров рисовать заранее.
+const SUB_AHEAD: usize = 4;
+
+/// Слова субтитров для превью: шортса или образец (когда речи нет), `fixed_time` — показать момент образца,
+/// а не время плеера.
+#[derive(Clone)]
+pub struct SubtitleInput {
+    pub words: Arc<Vec<SubWord>>,
+    pub fixed_time: Option<f64>,
+}
+
+impl SubtitleInput {
+    fn same(&self, o: &SubtitleInput) -> bool {
+        Arc::ptr_eq(&self.words, &o.words) && self.fixed_time == o.fixed_time
+    }
+}
+
+/// Субтитры превью: дорожки по раскладке слоёв, готовые растры, что сейчас лежит в композиторе.
+#[derive(Default)]
+struct Subs {
+    input: Option<SubtitleInput>,
+    /// Раскладки слов текущего `input`: (слов в строке, строк) → дорожка.
+    tracks: Vec<((u32, u32), Arc<SubtitleTrack>)>,
+    cache: Vec<(SubKey, Arc<LayerArt>)>,
+    /// Подмены в композиторе: индекс слоя → что нарисовано.
+    gpu: Vec<(usize, SubKey)>,
+    requested: Vec<SubKey>,
+}
 
 /// Последние известные значения свойств mpv.
 #[derive(Debug, Clone, Default)]
@@ -68,6 +101,8 @@ pub struct Player {
     canvas_tex: Option<egui::TextureId>,
     /// Холст надо пересобрать: новый кадр, шаблон или размер.
     dirty: bool,
+    subs: Subs,
+    sub_worker: SubtitleWorker,
 }
 
 /// Опции mpv для обоих экземпляров.
@@ -132,6 +167,8 @@ impl Player {
             canvas_size: (0, 0),
             canvas_tex: None,
             dirty: true,
+            subs: Subs::default(),
+            sub_worker: SubtitleWorker::new(cc.egui_ctx.clone()),
         })
     }
 
@@ -230,6 +267,128 @@ impl Player {
         }
     }
 
+    /// Слова субтитров (шортса или образец); `None` — субтитров не показывать.
+    pub fn set_subtitles(&mut self, input: Option<SubtitleInput>) {
+        let same = match (&self.subs.input, &input) {
+            (Some(a), Some(b)) => a.same(b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.subs.input = input;
+            self.subs.tracks.clear();
+            self.dirty = true;
+        }
+    }
+
+    /// Дорожка текущих слов в раскладке слоя.
+    fn sub_track(&mut self, words_per_line: u32, lines: u32) -> Option<Arc<SubtitleTrack>> {
+        let input = self.subs.input.as_ref()?;
+        if let Some((_, t)) = self.subs.tracks.iter().find(|(k, _)| *k == (words_per_line, lines)) {
+            return Some(t.clone());
+        }
+        let t = Arc::new(SubtitleTrack::new(input.words.as_ref().clone(), words_per_line, lines));
+        self.subs.tracks.push(((words_per_line, lines), t.clone()));
+        Some(t)
+    }
+
+    /// Субтитры в момент воспроизведения: нужный растр каждого слоя субтитров — в композитор (если готов;
+    /// пока нет — остаётся прошлый), нужное и следующие состояния — в фоновый поток.
+    fn pump_subtitles(&mut self, template: &Template) {
+        for (key, art) in self.sub_worker.poll() {
+            if !self.subs.cache.iter().any(|(k, _)| k.same(&key)) {
+                self.subs.cache.push((key, art));
+            }
+        }
+        let fonts = sc_raster::fonts::generation();
+        let t = self.subs.input.as_ref().map(|i| i.fixed_time.unwrap_or(self.state.time));
+        let mut wanted: Vec<SubKey> = Vec::new();
+        let mut layers: Vec<usize> = Vec::new();
+        for (i, layer) in template.layers.iter().enumerate() {
+            let &Layer::Subtitles { words_per_line, lines, mode, .. } = layer else { continue };
+            layers.push(i);
+            let (Some(t), Some(track)) = (t, self.sub_track(words_per_line, lines)) else {
+                self.set_sub_overlay(i, None);
+                continue;
+            };
+            let key_at = |at: f64| {
+                track.at(at).map(|(phrase, spoken)| SubKey {
+                    layer: layer.clone(),
+                    canvas: template.canvas,
+                    track: track.clone(),
+                    phrase,
+                    spoken: if mode == SubtitleMode::Static { 0 } else { spoken },
+                    fonts,
+                })
+            };
+            let Some(now) = key_at(t) else {
+                self.set_sub_overlay(i, None);
+                continue;
+            };
+            let ready = self.subs.cache.iter().find(|(k, _)| k.same(&now)).map(|(_, a)| a.clone());
+            let shown = self.subs.gpu.iter().any(|(j, k)| *j == i && k.same(&now));
+            match ready {
+                Some(art) if !shown => self.set_sub_overlay(i, Some((now.clone(), &art))),
+                Some(_) => {}
+                None => wanted.push(now.clone()),
+            }
+            // Упреждение — только при воспроизведении настоящих слов.
+            if self.subs.input.as_ref().is_some_and(|i| i.fixed_time.is_none()) {
+                for at in track.changes_after(t).take(SUB_AHEAD).collect::<Vec<_>>() {
+                    if let Some(k) = key_at(at + 1e-3)
+                        && !k.same(&now)
+                        && !wanted.iter().any(|w| w.same(&k))
+                        && !self.subs.cache.iter().any(|(c, _)| c.same(&k))
+                    {
+                        wanted.push(k);
+                    }
+                }
+            }
+        }
+        // Подмены слоёв, которые больше не субтитры (удалены, сдвинуты в списке).
+        let stale: Vec<usize> = self.subs.gpu.iter().map(|(j, _)| *j).filter(|j| !layers.contains(j)).collect();
+        for j in stale {
+            self.set_sub_overlay(j, None);
+        }
+        // Кэш: самые старые уходят первыми, показанные сейчас — остаются.
+        while self.subs.cache.len() > SUB_CACHE {
+            let gpu = &self.subs.gpu;
+            match self.subs.cache.iter().position(|(k, _)| !gpu.iter().any(|(_, g)| g.same(k))) {
+                Some(p) => {
+                    self.subs.cache.remove(p);
+                }
+                None => break,
+            }
+        }
+        let changed = wanted.len() != self.subs.requested.len() || wanted.iter().zip(&self.subs.requested).any(|(a, b)| !a.same(b));
+        if changed {
+            if !wanted.is_empty() {
+                self.sub_worker.request(wanted.clone());
+            }
+            self.subs.requested = wanted;
+        }
+    }
+
+    fn set_sub_overlay(&mut self, i: usize, art: Option<(SubKey, &LayerArt)>) {
+        let had = self.subs.gpu.iter().any(|(j, _)| *j == i);
+        if art.is_none() && !had {
+            return;
+        }
+        self.subs.gpu.retain(|(j, _)| *j != i);
+        let res = match art {
+            Some((key, art)) => {
+                let r = unsafe { self.comp.set_overlay(&self.gl, i, Some((key.layer.rect(), art))) };
+                self.subs.gpu.push((i, key));
+                r
+            }
+            None => unsafe { self.comp.set_overlay(&self.gl, i, None) },
+        };
+        if let Err(e) = res {
+            log::error!("растр субтитров: {e}");
+        }
+        self.dirty = true;
+    }
+
     /// События mpv и GL-работа (кадры → текстуры → фон → холст). В начале каждого кадра UI.
     pub fn pump(&mut self, frame: &mut eframe::Frame, template: &Template) {
         while let Some(ev) = self.mpv.poll_event() {
@@ -262,6 +421,7 @@ impl Player {
             self.dirty = true;
         }
         self.pump_bg();
+        self.pump_subtitles(template);
 
         let gl = self.gl.clone();
         let (w, h) = self.state.size;

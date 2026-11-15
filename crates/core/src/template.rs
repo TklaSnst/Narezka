@@ -111,6 +111,20 @@ pub enum VAlign {
     Bottom,
 }
 
+/// Как субтитры показывают ход речи.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleMode {
+    /// Фраза целиком, без выделения текущего слова.
+    Static,
+    /// Фраза целиком, текущее слово выделено.
+    #[default]
+    Highlight,
+    /// Сказанные слова — основным цветом, текущее выделено, несказанные — цветом `dim_color`
+    /// (прозрачный — скрыты, место под них остаётся).
+    Reveal,
+}
+
 /// Как выделяется акцент `*…*` в тексте.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -184,6 +198,64 @@ pub enum Layer {
     },
     /// Место под баннер пачки (этап 5).
     BannerSlot { rect: Rect },
+    /// Субтитры из транскрипции шортса: фразы по `lines` строк до `words_per_line` слов.
+    Subtitles {
+        rect: Rect,
+        font: String,
+        size: f32,
+        /// Обычные (сказанные) слова.
+        color: Color,
+        /// Текущее слово: цвет текста или плашки (`active_mode`).
+        #[serde(default = "default_active")]
+        active_color: Color,
+        #[serde(default)]
+        active_mode: AccentMode,
+        /// Ключевые слова (из нарезки LLM и отмеченные вручную).
+        #[serde(default = "default_accent")]
+        keyword_color: Color,
+        /// Несказанные слова в режиме `reveal`.
+        #[serde(default = "default_dim")]
+        dim_color: Color,
+        #[serde(default)]
+        mode: SubtitleMode,
+        #[serde(default = "default_words_per_line")]
+        words_per_line: u32,
+        #[serde(default = "default_lines")]
+        lines: u32,
+        #[serde(default)]
+        uppercase: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outline: Option<Outline>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shadow: Option<Shadow>,
+        /// Подложка под каждой строкой.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plate: Option<Color>,
+        #[serde(default)]
+        align: Align,
+        #[serde(default)]
+        valign: VAlign,
+    },
+}
+
+/// Слов в строке субтитров и строк во фразе — допустимые пределы.
+pub const SUBTITLE_WORDS_PER_LINE: std::ops::RangeInclusive<u32> = 1..=10;
+pub const SUBTITLE_LINES: std::ops::RangeInclusive<u32> = 1..=4;
+
+fn default_active() -> Color {
+    Color::rgb(0xff, 0xd6, 0x0a)
+}
+
+fn default_dim() -> Color {
+    Color([0xff, 0xff, 0xff, 0x60])
+}
+
+fn default_words_per_line() -> u32 {
+    3
+}
+
+fn default_lines() -> u32 {
+    2
 }
 
 fn default_accent() -> Color {
@@ -203,7 +275,8 @@ impl Layer {
             | Layer::Image { rect, .. }
             | Layer::Capsule { rect, .. }
             | Layer::Shape { rect, .. }
-            | Layer::BannerSlot { rect } => *rect,
+            | Layer::BannerSlot { rect }
+            | Layer::Subtitles { rect, .. } => *rect,
         }
     }
 }
@@ -280,6 +353,11 @@ impl Template {
                 shadow: None,
             }],
         }
+    }
+
+    /// Есть ли в шаблоне слой субтитров.
+    pub fn has_subtitles(&self) -> bool {
+        self.layers.iter().any(|l| matches!(l, Layer::Subtitles { .. }))
     }
 
     /// Слои основного видео: (индекс слоя, crop, dest).
@@ -360,6 +438,17 @@ impl Template {
                     }
                 }
                 Layer::BannerSlot { rect: r } => rect(r, "rect")?,
+                Layer::Subtitles { rect: r, font, size, words_per_line, lines, outline, shadow: sh, .. } => {
+                    rect(r, "rect")?;
+                    value(!font.is_empty(), "font")?;
+                    value((0.005..=0.5).contains(size), "size")?;
+                    value(SUBTITLE_WORDS_PER_LINE.contains(words_per_line), "words_per_line")?;
+                    value(SUBTITLE_LINES.contains(lines), "lines")?;
+                    if let Some(o) = outline {
+                        value(o.width > 0.0 && o.width <= 0.05, "outline.width")?;
+                    }
+                    shadow(sh)?;
+                }
             }
         }
         if !has_main {
@@ -576,6 +665,34 @@ mod tests {
         // кнопки справа
         assert!(Layer::BannerSlot { rect: Rect::new(0.7, 0.5, 0.2, 0.1) }.in_unsafe_zone());
         assert!(!Layer::BannerSlot { rect: Rect::new(0.05, 0.5, 0.8, 0.1) }.in_unsafe_zone());
+    }
+
+    #[test]
+    fn subtitles_layer_defaults_and_limits() {
+        let mut t = Template::minimal();
+        t.layers.push(
+            toml::from_str::<Layer>(
+                r##"
+                type = "subtitles"
+                rect = { x = 0.05, y = 0.6, w = 0.8, h = 0.12 }
+                font = "Montserrat ExtraBold"
+                size = 0.06
+                color = "#ffffff"
+                mode = "reveal"
+                "##,
+            )
+            .unwrap(),
+        );
+        assert!(t.has_subtitles());
+        let Layer::Subtitles { words_per_line, lines, active_mode, dim_color, .. } = &t.layers[1] else { panic!() };
+        assert_eq!((*words_per_line, *lines, *active_mode), (3, 2, AccentMode::Color));
+        assert_eq!(dim_color.0[3], 0x60);
+        t.validate().unwrap();
+        assert_eq!(Template::from_toml(&t.to_toml()).unwrap(), t);
+        assert!(!t.layers[1].in_unsafe_zone());
+        let Layer::Subtitles { words_per_line, .. } = &mut t.layers[1] else { panic!() };
+        *words_per_line = 0;
+        assert_eq!(t.validate(), Err(TemplateError::BadValue { layer: 1, field: "words_per_line" }));
     }
 
     #[test]

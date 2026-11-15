@@ -11,9 +11,11 @@ use image::imageops::FilterType;
 use sc_core::{Align, Background, Canvas, Color, Layer, Paint, Rect, Shadow, Template, VAlign, gradient_t, rounded_rect_coverage};
 
 pub mod fonts;
+pub mod subtitles;
 pub mod text;
 
 pub use fonts::warm_up;
+pub use subtitles::subtitle_art;
 pub use text::TextStyle;
 
 #[derive(Debug, thiserror::Error)]
@@ -232,15 +234,20 @@ pub fn layer(layer: &Layer, canvas: Canvas) -> Result<LayerArt, RasterError> {
                 valign: *valign,
                 wrap: true,
             };
-            LayerArt { below: None, above: text_sprite(x, y, w, h, content, &style, shadow.as_ref(), cw) }
+            let above = (!content.trim().is_empty())
+                .then(|| text_sprite(x, y, w, h, &style, shadow.as_ref(), cw, |pm, r| {
+                    text::draw_text(pm, r, content, &style);
+                }))
+                .flatten();
+            LayerArt { below: None, above }
         }
         Layer::Capsule { rect, logo, text, font, text_color, fill } => {
             let (x, y, w, h) = rect_px(*rect, canvas);
             let logo = logo.as_deref().map(open).transpose()?;
             LayerArt { below: None, above: Some(Sprite { x, y, bitmap: capsule(w, h, logo.as_ref(), text, font, *text_color, *fill) }) }
         }
-        // Место баннера — этап 5.
-        Layer::BannerSlot { .. } => LayerArt::default(),
+        // Место баннера — этап 5; субтитры зависят от времени — см. [`subtitle_art`].
+        Layer::BannerSlot { .. } | Layer::Subtitles { .. } => LayerArt::default(),
     })
 }
 
@@ -257,19 +264,26 @@ fn fit_image(img: &image::RgbaImage, w: u32, h: u32, opacity: f32) -> (Bitmap, i
     (bm, (w - sw) as i32 / 2, (h - sh) as i32 / 2)
 }
 
-/// Текстовый слой: прямоугольник `(x, y, w, h)` с полями под обводку, вылезающие глифы и тень.
+/// Текстовый слой: прямоугольник `(x, y, w, h)` с полями под обводку, вылезающие глифы и тень;
+/// `draw` рисует текст в пиксмап в переданный ему прямоугольник.
 #[allow(clippy::too_many_arguments)]
-fn text_sprite(x: i32, y: i32, w: u32, h: u32, content: &str, style: &TextStyle, shadow: Option<&Shadow>, cw: f32) -> Option<Sprite> {
-    if content.trim().is_empty() {
-        return None;
-    }
+pub(crate) fn text_sprite(
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    style: &TextStyle,
+    shadow: Option<&Shadow>,
+    cw: f32,
+    draw: impl FnOnce(&mut tiny_skia::Pixmap, (f32, f32, f32, f32)),
+) -> Option<Sprite> {
     let sigma = shadow.map_or(0.0, |s| s.blur * cw / 2.0);
     let (sdx, sdy) = shadow.map_or((0, 0), |s| ((s.dx * cw).round() as i32, (s.dy * cw).round() as i32));
     let outline = style.outline.map_or(0.0, |o| o.0);
     let m = (style.size * 0.5 + outline + sigma * 3.0).ceil() as u32 + sdx.unsigned_abs().max(sdy.unsigned_abs()) + 1;
     let (bw, bh) = (w + 2 * m, h + 2 * m);
     let mut pm = tiny_skia::Pixmap::new(bw, bh)?;
-    text::draw_text(&mut pm, (m as f32, m as f32, w as f32, h as f32), content, style);
+    draw(&mut pm, (m as f32, m as f32, w as f32, h as f32));
     let mut bm = Bitmap { width: bw, height: bh, data: pm.take() };
     if let Some(s) = shadow {
         add_shadow(&mut bm, s.color, sigma, sdx, sdy);

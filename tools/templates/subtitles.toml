@@ -1,0 +1,24 @@
+# Тестовый шаблон субтитров: размытый фон, видео по центру, две строки с подсветкой слова плашкой и подложкой строк.
+name = "subtitles"
+background = { type = "blur", darken = 0.35, scale = 1.0 }
+
+[[layers]]
+type = "main_video"
+crop = { x = 0.0, y = 0.0, w = 1.0, h = 1.0 }
+dest = { x = 0.0, y = 0.3418, w = 1.0, h = 0.3164 }
+
+[[layers]]
+type = "subtitles"
+rect = { x = 0.06, y = 0.62, w = 0.78, h = 0.13 }
+font = "Montserrat ExtraBold"
+size = 0.06
+color = "#ffffff"
+active_color = "#ff3b30"
+active_mode = "plate"
+keyword_color = "#ffd60a"
+mode = "highlight"
+words_per_line = 3
+lines = 2
+uppercase = true
+outline = { width = 0.004, color = "#000000" }
+shadow = { color = "#000000a0", blur = 0.01, dy = 0.004 }

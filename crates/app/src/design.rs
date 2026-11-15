@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, CursorIcon, Key, Pos2, Sense, Stroke, Vec2};
 use sc_core::{
     AccentMode, Align, Background, Batch, Border, Canvas, Color, Layer, Outline, Paint, Rect, SHORTS_UNSAFE_ZONES, Shadow,
-    ShortId, ShortStatus, Template, TemplateError, TemplateRef, VAlign, main_video_crop,
+    ShortId, ShortStatus, SubtitleMode, Template, TemplateError, TemplateRef, VAlign, SUBTITLE_LINES,
+    SUBTITLE_WORDS_PER_LINE, main_video_crop,
 };
 use sc_i18n::I18n;
 
@@ -133,6 +134,7 @@ enum NewLayer {
     Capsule,
     Shape,
     Banner,
+    Subtitles,
 }
 
 fn layer_key(l: &Layer) -> &'static str {
@@ -143,6 +145,7 @@ fn layer_key(l: &Layer) -> &'static str {
         Layer::Capsule { .. } => "layer-capsule",
         Layer::Shape { .. } => "layer-shape",
         Layer::BannerSlot { .. } => "layer-banner",
+        Layer::Subtitles { .. } => "layer-subtitles",
     }
 }
 
@@ -303,6 +306,25 @@ impl App {
                 corner_radius: 0.0,
             },
             NewLayer::Banner => Layer::BannerSlot { rect: Rect::new(0.1, 0.62, 0.8, 0.1) },
+            NewLayer::Subtitles => Layer::Subtitles {
+                rect: Rect::new(0.06, 0.62, 0.78, 0.12),
+                font: sc_raster::fonts::font_name(sc_raster::fonts::SANS, 800),
+                size: 0.06,
+                color: Color::WHITE,
+                active_color: Color::rgb(0xff, 0xd6, 0x0a),
+                active_mode: AccentMode::Color,
+                keyword_color: Color::rgb(0xff, 0x3b, 0x30),
+                dim_color: Color([0xff, 0xff, 0xff, 0x60]),
+                mode: SubtitleMode::Highlight,
+                words_per_line: 3,
+                lines: 2,
+                uppercase: true,
+                outline: Some(Outline { width: 0.005, color: Color::BLACK }),
+                shadow: None,
+                plate: None,
+                align: Align::Center,
+                valign: VAlign::Center,
+            },
         };
         self.design.last_edit = None;
         self.design_edit("add", |t| t.layers.insert(at, layer));
@@ -392,7 +414,9 @@ impl App {
             }),
             FileTarget::Font(i) => match sc_raster::fonts::install_font(&path) {
                 Ok(name) => self.design_edit("file", |t| {
-                    if let Some(Layer::Text { font, .. } | Layer::Capsule { font, .. }) = t.layers.get_mut(i) {
+                    if let Some(Layer::Text { font, .. } | Layer::Capsule { font, .. } | Layer::Subtitles { font, .. }) =
+                        t.layers.get_mut(i)
+                    {
                         *font = name;
                     }
                 }),
@@ -593,6 +617,7 @@ impl App {
             ui.menu_button(self.i18n.tr("design-add"), |ui| {
                 let kinds = [
                     (NewLayer::Text, "layer-text"),
+                    (NewLayer::Subtitles, "layer-subtitles"),
                     (NewLayer::Image, "layer-image"),
                     (NewLayer::Capsule, "layer-capsule"),
                     (NewLayer::Shape, "layer-shape"),
@@ -869,7 +894,8 @@ fn set_rect(l: &mut Layer, f: impl FnOnce(&mut Rect)) {
         | Layer::Image { rect: r, .. }
         | Layer::Capsule { rect: r, .. }
         | Layer::Shape { rect: r, .. }
-        | Layer::BannerSlot { rect: r } => f(r),
+        | Layer::BannerSlot { rect: r }
+        | Layer::Subtitles { rect: r, .. } => f(r),
     }
 }
 
@@ -1091,8 +1117,95 @@ fn layer_props(ui: &mut egui::Ui, tr: &I18n, l: &mut Layer, i: usize, canvas: Ca
                 row(ui, tr.tr("prop-corner-radius"), |ui| px(ui, corner_radius, cw, 0.0..=0.5));
             }
             Layer::BannerSlot { rect } => rect_props(ui, tr, rect, canvas),
+            Layer::Subtitles {
+                rect,
+                font,
+                size,
+                color: c,
+                active_color,
+                active_mode,
+                keyword_color,
+                dim_color,
+                mode,
+                words_per_line,
+                lines,
+                uppercase,
+                outline,
+                shadow,
+                plate,
+                align,
+                valign,
+            } => {
+                rect_props(ui, tr, rect, canvas);
+                row(ui, tr.tr("prop-sub-mode"), |ui| {
+                    let modes = [
+                        (SubtitleMode::Static, "sub-mode-static"),
+                        (SubtitleMode::Highlight, "sub-mode-highlight"),
+                        (SubtitleMode::Reveal, "sub-mode-reveal"),
+                    ];
+                    align_combo(ui, tr, "sub-mode", mode, &modes);
+                });
+                font_props(ui, tr, font, i, pick);
+                row(ui, tr.tr("prop-font-size"), |ui| px(ui, size, cw, 0.005..=0.5));
+                row(ui, tr.tr("prop-color"), |ui| color(ui, c));
+                if *mode != SubtitleMode::Static {
+                    row(ui, tr.tr("prop-sub-active"), |ui| {
+                        color(ui, active_color);
+                        align_combo(ui, tr, "sub-active", active_mode, &[(AccentMode::Color, "accent-color"), (AccentMode::Plate, "accent-plate")]);
+                    });
+                }
+                row(ui, tr.tr("prop-sub-keyword"), |ui| color(ui, keyword_color));
+                if *mode == SubtitleMode::Reveal {
+                    row(ui, tr.tr("prop-sub-unspoken"), |ui| {
+                        let mut hidden = dim_color.0[3] == 0;
+                        if !hidden {
+                            color(ui, dim_color);
+                        }
+                        if ui.checkbox(&mut hidden, tr.tr("prop-sub-hide")).changed() {
+                            dim_color.0[3] = if hidden { 0 } else { 0x60 };
+                        }
+                    });
+                }
+                row(ui, tr.tr("prop-sub-layout"), |ui| {
+                    let (w, l) = (SUBTITLE_WORDS_PER_LINE, SUBTITLE_LINES);
+                    ui.add(egui::DragValue::new(words_per_line).range(*w.start()..=*w.end()).speed(0.05).suffix(tr.tr("prop-sub-words")));
+                    ui.add(egui::DragValue::new(lines).range(*l.start()..=*l.end()).speed(0.05).suffix(tr.tr("prop-sub-lines")));
+                });
+                row(ui, tr.tr("prop-sub-uppercase"), |ui| {
+                    ui.checkbox(uppercase, "");
+                });
+                let mut on = plate.is_some();
+                row(ui, tr.tr("prop-sub-plate"), |ui| {
+                    ui.checkbox(&mut on, "");
+                    if let Some(p) = plate {
+                        color(ui, p);
+                    }
+                });
+                if on != plate.is_some() {
+                    *plate = on.then_some(Color([0, 0, 0, 0xb0]));
+                }
+                row(ui, tr.tr("prop-align"), |ui| {
+                    align_combo(ui, tr, "align", align, &[(Align::Left, "align-left"), (Align::Center, "align-center"), (Align::Right, "align-right")]);
+                    align_combo(ui, tr, "valign", valign, &[(VAlign::Top, "valign-top"), (VAlign::Center, "valign-center"), (VAlign::Bottom, "valign-bottom")]);
+                });
+                let mut on = outline.is_some();
+                row(ui, tr.tr("prop-outline"), |ui| {
+                    ui.checkbox(&mut on, "");
+                    if let Some(o) = outline {
+                        color(ui, &mut o.color);
+                        px(ui, &mut o.width, cw, 1.0 / cw..=0.05);
+                    }
+                });
+                if on != outline.is_some() {
+                    *outline = on.then_some(Outline { width: 0.005, color: Color::BLACK });
+                }
+                shadow_props(ui, tr, shadow, cw);
+            }
         }
     });
+    if matches!(l, Layer::Subtitles { .. }) {
+        ui.weak(tr.tr("prop-sub-hint"));
+    }
     if matches!(l, Layer::Text { .. } | Layer::Capsule { .. }) {
         ui.weak(tr.tr("prop-content-hint"));
     }

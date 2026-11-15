@@ -40,10 +40,35 @@ pub struct TextStyle<'a> {
     pub wrap: bool,
 }
 
+/// Как рисуется кусок текста: цвет глифов и, если есть, плашка под ним.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpanPaint {
+    pub color: Color,
+    pub plate: Option<Color>,
+}
+
 /// Рисует текст в прямоугольник `(x, y, w, h)` пиксмапа: перенос по словам (если `wrap`), выравнивание,
 /// при нехватке места — уменьшение кегля. Возвращает итоговый кегль.
-pub fn draw_text(pm: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), content: &str, style: &TextStyle) -> f32 {
-    let spans = parse_accent(content);
+pub fn draw_text(pm: &mut Pixmap, rect: (f32, f32, f32, f32), content: &str, style: &TextStyle) -> f32 {
+    let spans: Vec<(String, usize)> = parse_accent(content).into_iter().map(|(t, a)| (t, usize::from(a))).collect();
+    let accent = match style.accent_mode {
+        AccentMode::Color => SpanPaint { color: style.accent_color, plate: None },
+        AccentMode::Plate => SpanPaint { color: style.color, plate: Some(style.accent_color) },
+    };
+    draw_spans(pm, rect, &spans, &[SpanPaint { color: style.color, plate: None }, accent], None, style)
+}
+
+/// Рисует куски текста `(текст, индекс в paints)` — каждый своим цветом и плашкой; `line_plate` — подложка
+/// под каждой строкой. Соседние глифы одного куска делят одну плашку. Обводка куска — прозрачная настолько же,
+/// насколько его цвет (скрытые слова не оставляют контура). Возвращает итоговый кегль.
+pub fn draw_spans(
+    pm: &mut Pixmap,
+    (x, y, w, h): (f32, f32, f32, f32),
+    spans: &[(String, usize)],
+    paints: &[SpanPaint],
+    line_plate: Option<Color>,
+    style: &TextStyle,
+) -> f32 {
     if spans.iter().all(|(t, _)| t.trim().is_empty()) {
         return style.size;
     }
@@ -62,7 +87,7 @@ pub fn draw_text(pm: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), content: &
         let mut buf = Buffer::new(system, Metrics::new(size, size * LINE_HEIGHT));
         buf.set_wrap(if style.wrap { Wrap::Word } else { Wrap::None });
         buf.set_size(Some(w), None);
-        let rich = spans.iter().map(|(t, accent)| (t.as_str(), attrs.clone().metadata(usize::from(*accent))));
+        let rich = spans.iter().map(|(t, m)| (t.as_str(), attrs.clone().metadata(*m)));
         buf.set_rich_text(rich, &attrs, Shaping::Advanced, align);
         buf.shape_until_scroll(system, false);
         let (lines, width) = buf.layout_runs().fold((0, 0f32), |(n, mw), r| (n + 1, mw.max(r.line_w)));
@@ -79,30 +104,47 @@ pub fn draw_text(pm: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), content: &
         VAlign::Center => (h - total) / 2.0,
         VAlign::Bottom => h - total,
     };
-    let mut plain = PathBuilder::new();
-    let mut accent = PathBuilder::new();
-    let mut plates = Vec::new();
+    let mut paths: Vec<PathBuilder> = (0..paints.len()).map(|_| PathBuilder::new()).collect();
+    // (левый край, правый край, кусок, базовая линия)
+    let mut plates: Vec<(f32, f32, usize, f32)> = Vec::new();
+    let mut line_plates = Vec::new();
     for run in buf.layout_runs() {
         let baseline = y0 + run.line_y;
-        let mut plate: Option<(f32, f32)> = None;
+        let mut plate: Option<(f32, f32, usize)> = None;
+        let mut extent: Option<(f32, f32)> = None;
         for g in run.glyphs {
-            let is_accent = g.metadata == 1;
-            if is_accent {
-                let (l, r) = plate.get_or_insert((g.x, g.x + g.w));
+            let m = g.metadata.min(paints.len() - 1);
+            let visible = !run.text[g.start..g.end].trim().is_empty();
+            if visible {
+                let (l, r) = extent.get_or_insert((g.x, g.x + g.w));
                 *l = l.min(g.x);
                 *r = r.max(g.x + g.w);
-            } else if let Some(p) = plate.take() {
-                plates.push((p, baseline));
+            }
+            match &mut plate {
+                Some((l, r, pi)) if *pi == m => {
+                    *l = l.min(g.x);
+                    *r = r.max(g.x + g.w);
+                }
+                _ => {
+                    if let Some((l, r, pi)) = plate.take() {
+                        plates.push((l, r, pi, baseline));
+                    }
+                    if paints[m].plate.is_some() {
+                        plate = Some((g.x, g.x + g.w, m));
+                    }
+                }
             }
             let key = g.physical((0.0, 0.0), 1.0).cache_key;
             let Some(cmds) = cache.get_outline_commands(system, key) else { continue };
             let gx = x + g.x + g.font_size * g.x_offset;
             let gy = baseline + g.y - g.font_size * g.y_offset;
-            let pb = if is_accent { &mut accent } else { &mut plain };
-            append_outline(pb, cmds, gx, gy);
+            append_outline(&mut paths[m], cmds, gx, gy);
         }
-        if let Some(p) = plate {
-            plates.push((p, baseline));
+        if let Some((l, r, pi)) = plate {
+            plates.push((l, r, pi, baseline));
+        }
+        if let Some((l, r)) = extent {
+            line_plates.push((l, r, baseline));
         }
     }
 
@@ -112,31 +154,43 @@ pub fn draw_text(pm: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), content: &
         p.anti_alias = true;
         p
     };
-    let plain = plain.finish();
-    let accent = accent.finish();
-    if style.accent_mode == AccentMode::Plate {
-        // Плашка — по высоте прописных, с запасом по бокам.
-        let pad = size * 0.22;
-        for ((l, r), baseline) in plates {
-            let rect = tiny_skia::Rect::from_ltrb(x + l - pad, baseline - size * 0.95, x + r + pad, baseline + size * 0.32);
-            if let Some(path) = rect.and_then(|r| rounded_rect_path(r, size * 0.15)) {
-                pm.fill_path(&path, &paint(style.accent_color), FillRule::Winding, Transform::identity(), None);
+    let fill_rounded = |pm: &mut Pixmap, l: f32, t: f32, r: f32, b: f32, radius: f32, c: Color| {
+        if let Some(path) = tiny_skia::Rect::from_ltrb(l, t, r, b).and_then(|r| rounded_rect_path(r, radius)) {
+            pm.fill_path(&path, &paint(c), FillRule::Winding, Transform::identity(), None);
+        }
+    };
+    if let Some(c) = line_plate {
+        // Подложка строки — по высоте строки, с запасом по бокам.
+        let pad = size * 0.3;
+        for (l, r, baseline) in line_plates {
+            fill_rounded(pm, x + l - pad, baseline - size * 1.0, x + r + pad, baseline + size * 0.3, size * 0.2, c);
+        }
+    }
+    // Плашка — по высоте прописных, с запасом по бокам.
+    let pad = size * 0.22;
+    for (l, r, m, baseline) in plates {
+        if let Some(c) = paints[m].plate {
+            fill_rounded(pm, x + l - pad, baseline - size * 0.95, x + r + pad, baseline + size * 0.32, size * 0.15, c);
+        }
+    }
+    let paths: Vec<Option<tiny_skia::Path>> = paths.into_iter().map(PathBuilder::finish).collect();
+    if let Some((width, color)) = style.outline {
+        let stroke = Stroke { width: width * 2.0, line_join: LineJoin::Round, ..Default::default() };
+        for (path, p) in paths.iter().zip(paints) {
+            let a = (color.0[3] as u32 * p.color.0[3] as u32 / 255) as u8;
+            if let Some(path) = path
+                && a > 0
+            {
+                let c = Color([color.0[0], color.0[1], color.0[2], a]);
+                pm.stroke_path(path, &paint(c), &stroke, Transform::identity(), None);
             }
         }
     }
-    if let Some((width, color)) = style.outline {
-        let stroke = Stroke { width: width * 2.0, line_join: LineJoin::Round, ..Default::default() };
-        for path in plain.iter().chain(accent.iter()) {
-            pm.stroke_path(path, &paint(color), &stroke, Transform::identity(), None);
-        }
-    }
-    let accent_fill = match style.accent_mode {
-        AccentMode::Color => style.accent_color,
-        AccentMode::Plate => style.color,
-    };
-    for (path, color) in [(&plain, style.color), (&accent, accent_fill)] {
-        if let Some(path) = path {
-            pm.fill_path(path, &paint(color), FillRule::Winding, Transform::identity(), None);
+    for (path, p) in paths.iter().zip(paints) {
+        if let Some(path) = path
+            && p.color.0[3] > 0
+        {
+            pm.fill_path(path, &paint(p.color), FillRule::Winding, Transform::identity(), None);
         }
     }
     size

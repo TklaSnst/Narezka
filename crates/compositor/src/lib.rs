@@ -7,7 +7,7 @@
 pub mod gl;
 pub mod quad;
 
-use sc_core::{Background, Layer, Rect, Template, background_crop, main_video_crop_px};
+use sc_core::{Background, InsertPlan, InsertZ, Layer, Rect, Template, background_crop, insert_fit, main_video_crop_px};
 use sc_raster::{Bitmap, LayerArt, Sprite, video_rect_px};
 
 pub use gl::{Blur, BlurParams, Target};
@@ -58,6 +58,9 @@ pub struct Compositor {
     /// Размер исходника (для формул кропа) — может отличаться от размера текстуры.
     src_size: (u32, u32),
     bg_video: Option<Target>,
+    /// Кадр рекламной вставки (в него рисует третий mpv) и план показа, пока вставка идёт.
+    insert: Option<Target>,
+    insert_view: Option<InsertPlan>,
     blur: Blur,
     blurred: Option<glow::Texture>,
     quad: Quad,
@@ -74,6 +77,8 @@ impl Compositor {
                 video: None,
                 src_size: (0, 0),
                 bg_video: None,
+                insert: None,
+                insert_view: None,
                 blur: Blur::new(gl)?,
                 blurred: None,
                 quad: Quad::new(gl)?,
@@ -91,6 +96,47 @@ impl Compositor {
     /// Цель для mpv видео-фона.
     pub fn bg_video_target(&self) -> Option<(u32, i32, i32)> {
         self.bg_video.as_ref().map(|t| (t.fbo.0.get(), t.w, t.h))
+    }
+
+    /// Цель для mpv вставки.
+    pub fn insert_target(&self) -> Option<(u32, i32, i32)> {
+        self.insert.as_ref().map(|t| (t.fbo.0.get(), t.w, t.h))
+    }
+
+    /// Готовит текстуру кадра вставки; `None` — вставки нет, текстура освобождается.
+    ///
+    /// # Safety
+    /// GL-контекст должен быть текущим.
+    pub unsafe fn ensure_insert(&mut self, gl: &glow::Context, size: Option<(u32, u32)>) -> Result<(), String> {
+        let current = self.insert.as_ref().map(|t| (t.w as u32, t.h as u32));
+        let size = size.filter(|s| s.0 > 0 && s.1 > 0);
+        if current == size {
+            return Ok(());
+        }
+        unsafe {
+            if let Some(t) = self.insert.take() {
+                t.delete(gl);
+            }
+            if let Some((w, h)) = size {
+                self.insert = Some(Target::new(gl, w as i32, h as i32, true)?);
+            }
+        }
+        Ok(())
+    }
+
+    /// Вызывать после того, как mpv нарисовал кадр вставки.
+    ///
+    /// # Safety
+    /// GL-контекст должен быть текущим.
+    pub unsafe fn insert_rendered(&mut self, gl: &glow::Context) {
+        if let Some(t) = &self.insert {
+            unsafe { t.update_mipmaps(gl) };
+        }
+    }
+
+    /// Показывать вставку по плану (`None` — не показывать). План — для шаблона, который придёт в `compose`.
+    pub fn set_insert_view(&mut self, plan: Option<InsertPlan>) {
+        self.insert_view = plan;
     }
 
     pub fn src_size(&self) -> Option<(u32, u32)> {
@@ -322,7 +368,31 @@ impl Compositor {
         }
 
         let scale = w as f32 / cw;
+        // Вставка: тот же `insert_fit`, что у рендера; поля при вписывании — чёрные (та же текстура с dim = 0).
+        let view = self.insert_view.as_ref().zip(self.insert.as_ref());
+        let draw_insert = || {
+            let Some((plan, t)) = view else { return };
+            let (dx, dy, dw, dh) = plan.dest;
+            let fit = insert_fit((t.w as u32, t.h as u32), dw, dh);
+            let (cx, cy, cwp, chp) = fit.crop;
+            let (ox, oy, ow, oh) = fit.out;
+            let uv = [cx as f32 / t.w as f32, cy as f32 / t.h as f32, cwp as f32 / t.w as f32, chp as f32 / t.h as f32];
+            let radius = plan.radius * scale;
+            if (ow, oh) != (dw, dh) {
+                draw(t.tex, px(dx as f32, dy as f32, dw as f32, dh as f32), uv, radius, 0.0);
+            }
+            let dest = px((dx + ox) as f32, (dy + oy) as f32, ow as f32, oh as f32);
+            draw(t.tex, dest, uv, if (ow, oh) == (dw, dh) { radius } else { 0.0 }, 1.0);
+        };
+        let z = view.map(|(p, _)| p.z);
+        let hidden = |i: usize| view.is_some_and(|(p, _)| p.hidden.contains(&i));
         for (i, layer) in template.layers.iter().enumerate() {
+            if z == Some(InsertZ::Before(i)) {
+                draw_insert();
+            }
+            if hidden(i) {
+                continue;
+            }
             let art = match self.art.overlays.iter().find(|(k, _)| *k == i) {
                 Some((_, l)) => Some(l),
                 None => self.art.layers.get(i).and_then(Option::as_ref),
@@ -341,8 +411,14 @@ impl Compositor {
                 let uv = [sx as f32 / s0, sy as f32 / s1, sw as f32 / s0, sh as f32 / s1];
                 let (dx, dy, dw, dh) = video_rect_px(*dest, canvas);
                 draw(video.tex, px(dx as f32, dy as f32, dw as f32, dh as f32), uv, corner_radius * cw * scale, 1.0);
+                if z == Some(InsertZ::AfterVideo(i)) {
+                    draw_insert();
+                }
             }
             sprite_mapped(above, map);
+        }
+        if z == Some(InsertZ::Before(template.layers.len())) {
+            draw_insert();
         }
         unsafe { self.quad.end(gl) };
         Ok((target.tex, recreated))
@@ -367,7 +443,7 @@ impl Compositor {
     /// GL-контекст должен быть текущим.
     pub unsafe fn delete(&mut self, gl: &glow::Context) {
         unsafe {
-            for t in [self.video.take(), self.bg_video.take(), self.canvas.take()].into_iter().flatten() {
+            for t in [self.video.take(), self.bg_video.take(), self.insert.take(), self.canvas.take()].into_iter().flatten() {
                 t.delete(gl);
             }
             self.delete_art(gl);

@@ -118,7 +118,7 @@ impl App {
         self.lib.selected = Some(id);
     }
 
-    fn library_result(&mut self, r: Result<(), LibraryError>) {
+    pub(crate) fn library_result(&mut self, r: Result<(), LibraryError>) {
         if let Err(e) = r {
             self.lib.message = Some((true, self.i18n.tr_args("library-err-save", &[("error", e.to_string().into())])));
         }
@@ -348,6 +348,15 @@ impl App {
             } else if ui.button(self.i18n.tr("library-use-banner")).on_hover_text(self.i18n.tr("library-use-banner-hint")).clicked() {
                 self.set_banner(Some(id));
                 self.lib.message = Some((false, self.i18n.tr_args("library-banner-set", &[("name", a.name.clone().into())])));
+            }
+        }
+        if a.kind == AssetKind::Insert && a.meta.is_animated() {
+            let current = self.batch.insert.as_ref().is_some_and(|i| i.asset == id);
+            if current {
+                ui.label(self.i18n.tr("library-is-insert"));
+            } else if ui.button(self.i18n.tr("library-use-insert")).on_hover_text(self.i18n.tr("library-use-insert-hint")).clicked() {
+                self.set_insert(Some(id));
+                self.lib.message = Some((false, self.i18n.tr_args("library-insert-set", &[("name", a.name.clone().into())])));
             }
         }
         if a.kind == AssetKind::Insert {

@@ -188,8 +188,14 @@ impl Template {
     /// Шаблон с баннером: первое место под баннер становится картинкой/анимацией (нет места — баннер
     /// добавляется в конец в [`DEFAULT_BANNER_RECT`]), текст рядом — слоем в конце. `None` — без изменений.
     pub fn with_banner(&self, banner: Option<&BannerArt>) -> Template {
+        self.with_banner_layers(banner).0
+    }
+
+    /// [`Template::with_banner`] и номера слоёв баннера в итоговом шаблоне (картинка и текст рядом) —
+    /// для плана вставки, которая может баннер прятать.
+    pub fn with_banner_layers(&self, banner: Option<&BannerArt>) -> (Template, Vec<usize>) {
         let mut t = self.clone();
-        let Some(b) = banner else { return t };
+        let Some(b) = banner else { return (t, Vec::new()) };
         let layer = |rect: Rect| {
             if b.animated {
                 Layer::Clip { rect, path: b.path.clone(), width: b.size.0, height: b.size.1, decoder: b.decoder.clone() }
@@ -197,13 +203,16 @@ impl Template {
                 Layer::Image { rect, path: b.path.clone(), opacity: 1.0 }
             }
         };
+        let mut indices = Vec::new();
         let slot = match t.banner_slot() {
             Some(i) => {
                 let rect = t.layers[i].rect();
                 t.layers[i] = layer(rect);
+                indices.push(i);
                 rect
             }
             None => {
+                indices.push(t.layers.len());
                 t.layers.push(layer(DEFAULT_BANNER_RECT));
                 DEFAULT_BANNER_RECT
             }
@@ -213,10 +222,11 @@ impl Template {
             // Текст — рядом с самой картинкой, а не с рамкой места.
             let fitted = fit_rect(slot, b.size, aspect);
             if let Some(r) = text.rect(fitted, aspect) {
+                indices.push(t.layers.len());
                 t.layers.push(text.layer(r));
             }
         }
-        t
+        (t, indices)
     }
 }
 

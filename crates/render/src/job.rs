@@ -6,11 +6,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use sc_core::{Codec, Container, OutputSettings, SubWord, Template};
+use sc_core::{Codec, Container, InsertPlan, OutputSettings, SubWord, Template};
 
 use sc_raster::Art;
 
-use crate::graph::{self, GraphParams, Input};
+use crate::graph::{self, GraphParams, Input, InsertGraph};
 use crate::naming::part_path;
 use crate::subtitles::{self, SubtitleSeq};
 
@@ -21,6 +21,20 @@ pub struct Encoder {
     pub name: String,
     /// Устройство VAAPI — только для `*_vaapi`.
     pub vaapi_device: Option<PathBuf>,
+}
+
+/// Рекламная вставка шортса.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertJob {
+    pub path: PathBuf,
+    /// Место вставки — секунды исходника (внутри `start..end` задачи).
+    pub at: f64,
+    /// Длительность клипа, с.
+    pub duration: f64,
+    /// Размер кадра клипа (после поворота).
+    pub size: (u32, u32),
+    pub has_audio: bool,
+    pub plan: InsertPlan,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +51,8 @@ pub struct RenderJob {
     pub template: Template,
     /// Слова субтитров шортса (время — секунды исходника, с правками и ключевыми); пусто — субтитров нет.
     pub subtitles: Vec<SubWord>,
+    /// Рекламная вставка: основное видео стоит, пока она идёт.
+    pub insert: Option<InsertJob>,
     pub output: OutputSettings,
     pub encoder: Encoder,
     /// Итоговый файл; пока идёт рендер, пишется `.<имя>.part` рядом.
@@ -66,17 +82,40 @@ pub enum RenderError {
 }
 
 impl RenderJob {
+    /// Длительность итогового шортса (со вставкой).
     pub fn duration(&self) -> f64 {
-        (self.end - self.start).max(0.0)
+        (self.end - self.start).max(0.0) + self.insert.as_ref().map_or(0.0, |i| i.duration)
     }
 
     /// Последовательности картинок субтитров по слоям шаблона: (номер слоя, последовательность).
-    /// Время — от начала шортса. Пока обложки и вставки нет, это просто сдвиг на `start`.
+    /// Время — от начала шортса: слова после вставки сдвинуты на её длину (во время вставки слой спрятан).
     pub fn subtitle_sequences(&self) -> Vec<(usize, SubtitleSeq)> {
         let canvas = self.template.canvas;
+        let (words, end) = match &self.insert {
+            Some(ins) => {
+                let shift = |t: f64| if t >= ins.at { t + ins.duration } else { t };
+                let words: Vec<SubWord> =
+                    self.subtitles.iter().map(|w| SubWord { start: shift(w.start), end: shift(w.end), ..w.clone() }).collect();
+                (words, self.end + ins.duration)
+            }
+            None => (self.subtitles.clone(), self.end),
+        };
         (self.template.layers.iter().enumerate())
-            .filter_map(|(i, l)| subtitles::sequence(l, &self.subtitles, self.start, self.end, canvas).map(|s| (i, s)))
+            .filter_map(|(i, l)| subtitles::sequence(l, &words, self.start, end, canvas).map(|s| (i, s)))
             .collect()
+    }
+
+    fn insert_graph(&self) -> Option<InsertGraph> {
+        let ins = self.insert.as_ref()?;
+        Some(InsertGraph {
+            at: ins.at - self.start,
+            duration: ins.duration,
+            rest: (self.end - ins.at).max(0.0),
+            size: ins.size,
+            has_audio: ins.has_audio,
+            path: ins.path.clone(),
+            plan: ins.plan.clone(),
+        })
     }
 
     /// Аргументы ffmpeg (без имени программы) и граф; его входы надо записать в `work_dir` ([`Self::run`]).
@@ -96,9 +135,11 @@ impl RenderJob {
             resolution: self.output.resolution,
             fps: self.output.fps,
             vaapi,
+            audio: self.has_audio,
         };
         let positions: Vec<(usize, i32, i32)> = subs.iter().map(|(i, s)| (*i, s.x, s.y)).collect();
-        let g = graph::build(&self.template, art, &positions, &params);
+        let insert = self.insert_graph();
+        let g = graph::build(&self.template, art, &positions, insert.as_ref(), &params);
 
         let mut a: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y", "-progress", "pipe:1", "-nostats", "-stats_period", "0.25"]
             .map(String::from)
@@ -106,8 +147,9 @@ impl RenderJob {
         if let Some(dev) = &self.encoder.vaapi_device {
             a.extend(["-vaapi_device".into(), dev.display().to_string()]);
         }
-        // Поиск до -i: быстрый и, при перекодировании, точный до кадра.
-        a.extend(["-ss".into(), secs(self.start), "-t".into(), secs(self.duration())]);
+        // Поиск до -i: быстрый и, при перекодировании, точный до кадра. Со вставкой первый вход — до её места.
+        let first_end = self.insert.as_ref().map_or(self.end, |i| i.at);
+        a.extend(["-ss".into(), secs(self.start), "-t".into(), secs((first_end - self.start).max(0.0))]);
         a.extend(["-i".into(), self.input.display().to_string()]);
         for (k, input) in g.inputs.iter().enumerate() {
             match input {
@@ -123,14 +165,22 @@ impl RenderJob {
                         a.extend(["-c:v".into(), d.clone()]);
                     }
                 }
+                Input::SourceTail => {
+                    let at = self.insert.as_ref().map_or(self.end, |i| i.at);
+                    a.extend(["-ss".into(), secs(at), "-t".into(), secs((self.end - at).max(0.0))]);
+                }
+                Input::Insert { .. } => {
+                    let d = self.insert.as_ref().map_or(0.0, |i| i.duration);
+                    a.extend(["-t".into(), secs(d)]);
+                }
             }
             a.extend(["-i".into(), self.input_path(k + 1, input).display().to_string()]);
         }
         a.extend(["-filter_complex".into(), g.filter.clone(), "-map".into(), "[out]".into()]);
         a.extend(codec_args);
-        if self.has_audio {
+        if g.audio_out || self.has_audio {
             let kbps = self.output.audio_bitrate_kbps;
-            a.extend(["-map", "0:a:0", "-c:a", "aac"].map(String::from));
+            a.extend(["-map", if g.audio_out { "[aout]" } else { "0:a:0" }, "-c:a", "aac"].map(String::from));
             a.extend(["-b:a".into(), format!("{kbps}k")]);
         } else {
             a.push("-an".into());
@@ -149,7 +199,8 @@ impl RenderJob {
         match input {
             Input::Mask(_) => self.work_dir.join(format!("in{n}.pgm")),
             Input::Sprite { .. } | Input::BackgroundImage { .. } => self.work_dir.join(format!("in{n}.pam")),
-            Input::BackgroundVideo { path } | Input::Clip { path, .. } => path.clone(),
+            Input::BackgroundVideo { path } | Input::Clip { path, .. } | Input::Insert { path } => path.clone(),
+            Input::SourceTail => self.input.clone(),
             Input::Subtitles { .. } => self.work_dir.join(format!("in{n}.ffconcat")),
         }
     }
@@ -182,7 +233,7 @@ impl RenderJob {
                     s.as_ref().expect("вход графа есть только у существующего растра").bitmap.to_pam()
                 }
                 Input::BackgroundImage { .. } => art.background.as_ref().expect("фон-картинка растрирована").to_pam(),
-                Input::BackgroundVideo { .. } | Input::Clip { .. } => continue,
+                Input::BackgroundVideo { .. } | Input::Clip { .. } | Input::Insert { .. } | Input::SourceTail => continue,
                 Input::Subtitles { layer } => {
                     let seq = &subs.iter().find(|(i, _)| i == layer).expect("вход есть только у слоя с картинками").1;
                     let name = |f: usize| format!("in{}-{f}.png", k + 1);
@@ -319,6 +370,7 @@ mod tests {
             end: 91.5,
             template: Template::minimal(),
             subtitles: vec![],
+            insert: None,
             output: OutputSettings::default(),
             encoder: Encoder { name: encoder.into(), vaapi_device: vaapi.then(|| "/dev/dri/renderD128".into()) },
             dest: "/out/short_1.mp4".into(),
@@ -356,6 +408,45 @@ mod tests {
         let mut j = job("libx264", false);
         j.output.container = Container::Webm;
         assert!(matches!(j.args(&art, &[]), Err(RenderError::UnsupportedContainer("webm"))));
+    }
+
+    #[test]
+    fn insert_splits_source_and_maps_spliced_audio() {
+        let mut j = job("h264_vaapi", true);
+        let plan = j.template.insert_plan(sc_core::InsertMode::Slot, &[], false);
+        j.insert = Some(InsertJob { path: "/lib/ad.mp4".into(), at: 71.5, duration: 15.0, size: (1920, 1080), has_audio: true, plan });
+        assert_eq!(j.duration(), 45.0);
+        let s = joined(&j);
+        assert!(s.contains("-ss 61.500 -t 10.000 -i /in/ролик.mp4 -ss 71.500 -t 20.000 -i /in/ролик.mp4 -t 15.000 -i /lib/ad.mp4 -filter_complex"), "{s}");
+        assert!(s.contains("-map [out] -c:v h264_vaapi"), "{s}");
+        assert!(s.contains("-map [aout] -c:a aac -b:a 192k"), "{s}");
+        // субтитры после вставки сдвинуты на её длину
+        j.subtitles = vec![
+            SubWord { text: "до".into(), start: 70.0, end: 70.5, keyword: false },
+            SubWord { text: "после".into(), start: 72.0, end: 72.5, keyword: false },
+        ];
+        let mut t = Template::minimal();
+        t.layers.push(
+            toml::from_str(
+                r##"
+                type = "subtitles"
+                rect = { x = 0.05, y = 0.6, w = 0.9, h = 0.1 }
+                font = "Montserrat ExtraBold"
+                size = 0.06
+                color = "#ffffff"
+                "##,
+            )
+            .unwrap(),
+        );
+        j.template = t;
+        let seqs = j.subtitle_sequences();
+        let tl = &seqs[0].1.timeline;
+        let total: f64 = tl.iter().map(|(_, d)| d).sum();
+        assert!((total - 45.0).abs() < 1e-6, "{tl:?}");
+        // «после» начинается в 72 − 61.5 + 15 = 25.5 с от начала шортса
+        let mut t = 0.0;
+        let starts: Vec<f64> = tl.iter().map(|(_, d)| { let s = t; t += d; s }).collect();
+        assert!(starts.iter().any(|s| (s - 25.5).abs() < 1e-6), "{tl:?}");
     }
 
     #[test]

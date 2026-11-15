@@ -13,7 +13,7 @@ use eframe::glow;
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use sc_compositor::{ArtSlot, Compositor};
 use sc_raster::{Bitmap, LayerArt, Sprite};
-use sc_core::{Background, Canvas, Layer, Rect, SubWord, SubtitleMode, SubtitleTrack, Template};
+use sc_core::{Background, Canvas, InsertPlan, Layer, Rect, SubWord, SubtitleMode, SubtitleTrack, Template};
 use sc_mpv::{Event, Format, GetProcAddress, Mpv, Prop};
 
 use crate::raster_worker::{RasterWorker, Rastered};
@@ -97,6 +97,25 @@ pub struct State {
     pub error: Option<String>,
 }
 
+/// Рекламная вставка выбранного шортса: когда воспроизведение доходит до `at` (секунды исходника),
+/// основной плеер встаёт, вставка играет в своём mpv, затем основной продолжает.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviewInsert {
+    pub path: PathBuf,
+    pub at: f64,
+    pub duration: f64,
+    pub plan: InsertPlan,
+}
+
+/// Третий экземпляр mpv — клип вставки (со звуком, без петли).
+struct InsertPlayer {
+    mpv: Mpv,
+    path: PathBuf,
+    size: (u32, u32),
+    time: f64,
+    eof: bool,
+}
+
 /// Второй экземпляр mpv — видео-фон шаблона (по кругу, без звука, играет вместе с основным).
 struct BgVideo {
     mpv: Mpv,
@@ -139,6 +158,12 @@ pub struct Player {
     subs: Subs,
     sub_worker: SubtitleWorker,
     clips: Clips,
+    /// Вставка выбранного шортса, её плеер и идёт ли она сейчас.
+    insert: Option<PreviewInsert>,
+    ins: Option<InsertPlayer>,
+    ins_active: bool,
+    /// Время основного плеера в прошлом кадре — чтобы заметить, что воспроизведение пересекло место вставки.
+    last_time: f64,
 }
 
 /// Опции mpv для обоих экземпляров.
@@ -206,6 +231,10 @@ impl Player {
             subs: Subs::default(),
             sub_worker: SubtitleWorker::new(cc.egui_ctx.clone()),
             clips: Clips::default(),
+            insert: None,
+            ins: None,
+            ins_active: false,
+            last_time: 0.0,
         })
     }
 
@@ -235,7 +264,11 @@ impl Player {
 
     pub fn set_paused(&mut self, paused: bool) {
         if self.loaded.is_some() && self.state.paused != paused {
-            self.mpv.set("pause", if paused { "yes" } else { "no" });
+            // Во время вставки пауза — у её плеера, основной стоит.
+            match (&self.ins, self.ins_active) {
+                (Some(ins), true) => ins.mpv.set("pause", if paused { "yes" } else { "no" }),
+                _ => self.mpv.set("pause", if paused { "yes" } else { "no" }),
+            }
             self.state.paused = paused;
         }
     }
@@ -256,15 +289,18 @@ impl Player {
         if self.loaded.is_none() {
             return;
         }
+        self.stop_insert();
         let t = t.clamp(0.0, self.state.duration.max(0.0));
         let mode = if exact { "absolute+exact" } else { "absolute+keyframes" };
         self.mpv.command(&["seek", &format!("{t:.3}"), mode]);
         // Сразу показываем цель — событие с настоящим time-pos придёт через 40–90 мс.
         self.state.time = t;
+        self.last_time = t;
     }
 
     pub fn frame_step(&mut self, forward: bool) {
         if self.loaded.is_some() {
+            self.stop_insert();
             self.mpv.command(&[if forward { "frame-step" } else { "frame-back-step" }]);
         }
     }
@@ -274,12 +310,14 @@ impl Player {
         if self.range == Some((start, end)) {
             return;
         }
+        self.stop_insert();
         self.mpv.set("ab-loop-a", &format!("{start:.3}"));
         self.mpv.set("ab-loop-b", &format!("{end:.3}"));
         self.range = Some((start, end));
     }
 
     pub fn clear_range(&mut self) {
+        self.stop_insert();
         if self.range.take().is_some() {
             self.mpv.set("ab-loop-a", "no");
             self.mpv.set("ab-loop-b", "no");
@@ -288,6 +326,122 @@ impl Player {
 
     pub fn range(&self) -> Option<(f64, f64)> {
         self.range
+    }
+
+    /// Вставка выбранного шортса (`None` — нет). Тот же файл не перезагружается.
+    pub fn set_insert(&mut self, insert: Option<PreviewInsert>) {
+        if self.insert == insert {
+            return;
+        }
+        let same_file = self.insert.as_ref().map(|i| &i.path) == insert.as_ref().map(|i| &i.path);
+        let moved = self.insert.as_ref().map(|i| i.at) != insert.as_ref().map(|i| i.at);
+        if !same_file || moved || insert.is_none() {
+            self.stop_insert();
+        }
+        if !same_file {
+            self.ins = insert.as_ref().and_then(|i| self.open_insert(i.path.clone()));
+        }
+        self.insert = insert;
+        self.dirty = true;
+    }
+
+    /// Идёт вставка: (секунды от её начала, длительность).
+    pub fn insert_progress(&self) -> Option<(f64, f64)> {
+        let ins = self.ins.as_ref().filter(|_| self.ins_active)?;
+        Some((ins.time, self.insert.as_ref().map_or(0.0, |i| i.duration)))
+    }
+
+    /// Проиграть вставку с начала (кнопка в «Нарезке»): курсор — на место вставки.
+    pub fn play_insert(&mut self) {
+        let Some(at) = self.insert.as_ref().map(|i| i.at) else { return };
+        self.seek(at, true);
+        self.state.paused = false;
+        self.start_insert();
+    }
+
+    fn open_insert(&self, path: PathBuf) -> Option<InsertPlayer> {
+        let wake = self.ctx.clone();
+        let mpv = Mpv::new(&MPV_OPTIONS, self.get_proc.clone(), self.wl_display, Arc::new(move || wake.request_repaint()))
+            .map_err(|e| log::error!("mpv вставки: {e}"))
+            .ok()?;
+        for (name, f) in [("time-pos", Format::Double), ("eof-reached", Format::Flag), ("dwidth", Format::Int), ("dheight", Format::Int)] {
+            mpv.observe(name, f);
+        }
+        mpv.command(&["loadfile", &path.to_string_lossy()]);
+        Some(InsertPlayer { mpv, path, size: (0, 0), time: 0.0, eof: false })
+    }
+
+    /// Основной плеер встаёт на месте вставки, вставка играет с начала.
+    fn start_insert(&mut self) {
+        let (Some(ins), Some(cfg)) = (&mut self.ins, &self.insert) else { return };
+        self.mpv.set("pause", "yes");
+        self.mpv.command(&["seek", &format!("{:.3}", cfg.at), "absolute+exact"]);
+        self.state.time = cfg.at;
+        self.last_time = cfg.at;
+        ins.mpv.command(&["seek", "0", "absolute+exact"]);
+        ins.mpv.set("pause", if self.state.paused { "yes" } else { "no" });
+        ins.time = 0.0;
+        ins.eof = false;
+        self.ins_active = true;
+        self.dirty = true;
+    }
+
+    /// Вставка кончилась или прервана: основной продолжает (если не на паузе).
+    fn stop_insert(&mut self) {
+        if !self.ins_active {
+            return;
+        }
+        self.ins_active = false;
+        if let Some(ins) = &self.ins {
+            ins.mpv.set("pause", "yes");
+        }
+        self.mpv.set("pause", if self.state.paused { "yes" } else { "no" });
+        self.dirty = true;
+    }
+
+    /// События mpv вставки, переходы «основное → вставка → основное», текстура вставки.
+    fn pump_insert(&mut self) {
+        if let Some(ins) = &mut self.ins {
+            while let Some(ev) = ins.mpv.poll_event() {
+                match ev {
+                    Event::Property { name, value: Some(Prop::Int(v)) } if name == "dwidth" => ins.size.0 = v as u32,
+                    Event::Property { name, value: Some(Prop::Int(v)) } if name == "dheight" => ins.size.1 = v as u32,
+                    Event::Property { name, value: Some(Prop::Double(t)) } if name == "time-pos" => ins.time = t,
+                    Event::Property { name, value } if name == "eof-reached" => ins.eof = matches!(value, Some(Prop::Flag(true))),
+                    Event::EndFile { error: Some(e) } => log::error!("mpv не открыл вставку {:?}: {e}", ins.path),
+                    _ => {}
+                }
+            }
+        }
+        let (t, last) = (self.state.time, self.last_time);
+        self.last_time = t;
+        if let Some((at, duration)) = self.insert.as_ref().map(|c| (c.at, c.duration)) {
+            let in_range = self.range.is_some_and(|(a, b)| a <= at && at < b);
+            if self.ins_active {
+                if self.ins.as_ref().is_none_or(|i| i.eof || i.time >= duration - 0.02) {
+                    self.stop_insert();
+                }
+            } else if !self.state.paused && in_range && self.ins.is_some() && last < at && t >= at && t - at < 0.5 {
+                self.start_insert();
+            }
+        }
+        let size = self.ins.as_ref().map(|i| i.size);
+        if let Err(e) = unsafe { self.comp.ensure_insert(&self.gl, size) } {
+            log::error!("текстура вставки: {e}");
+        }
+        let view = self.insert.as_ref().filter(|_| self.ins_active).map(|c| c.plan.clone());
+        self.comp.set_insert_view(view);
+    }
+
+    /// Время от начала шортса так, как его видит рендер (со вставкой — плюс её длительность после неё).
+    fn short_time(&self) -> f64 {
+        let start = self.range.map_or(0.0, |r| r.0);
+        let base = (self.state.time - start).max(0.0);
+        match (&self.insert, &self.ins) {
+            (Some(cfg), Some(ins)) if self.ins_active => (cfg.at - start).max(0.0) + ins.time,
+            (Some(cfg), _) if self.state.time >= cfg.at => base + cfg.duration,
+            _ => base,
+        }
     }
 
     /// Собранный холст, если исходник открыт и его кадр уже есть.
@@ -440,7 +594,7 @@ impl Player {
         }
         let canvas = template.canvas;
         let s = (CLIP_CANVAS_W / canvas.width as f32).min(1.0);
-        let t = (self.state.time - self.range.map_or(0.0, |r| r.0)).max(0.0);
+        let t = self.short_time();
         let mut live: Vec<(usize, ClipKey)> = Vec::new();
         for (i, layer) in template.layers.iter().enumerate() {
             let Layer::Clip { path, decoder, .. } = layer else { continue };
@@ -535,6 +689,7 @@ impl Player {
             self.dirty = true;
         }
         self.pump_bg();
+        self.pump_insert();
         self.pump_subtitles(template);
         self.pump_clips(template);
 
@@ -559,6 +714,16 @@ impl Player {
             bg.mpv.render(fbo, fw, fh);
             unsafe { self.comp.bg_video_rendered(&gl) };
             self.dirty = true;
+        }
+        if let Some(ins) = &self.ins
+            && let Some((fbo, fw, fh)) = self.comp.insert_target()
+            && ins.mpv.wants_frame()
+        {
+            ins.mpv.render(fbo, fw, fh);
+            unsafe { self.comp.insert_rendered(&gl) };
+            if self.ins_active {
+                self.dirty = true;
+            }
         }
 
         let (cw, ch) = self.canvas_size;
@@ -709,6 +874,8 @@ impl Player {
                 }
             }
             "duration" => self.state.duration = f(&value),
+            // Во время вставки основной стоит по нашей команде — это не пауза пользователя.
+            "pause" if self.ins_active => {}
             "pause" => self.state.paused = !matches!(value, Some(Prop::Flag(false))),
             "dwidth" => self.state.size.0 = f(&value) as u32,
             "dheight" => self.state.size.1 = f(&value) as u32,
@@ -722,12 +889,16 @@ impl Player {
         if let Some(bg) = &self.bg {
             bg.mpv.report_swap();
         }
+        if let Some(ins) = &self.ins {
+            ins.mpv.report_swap();
+        }
     }
 
     /// Освободить mpv и GL-ресурсы. Вызывать при текущем GL-контексте (`on_exit`).
     pub fn destroy(mut self, gl: &glow::Context) {
         // render context mpv освобождается первым — в Drop, пока контекст текущий.
         drop(self.bg.take());
+        drop(self.ins.take());
         drop(self.mpv);
         unsafe { self.comp.delete(gl) };
     }

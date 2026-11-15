@@ -33,6 +33,8 @@ pub struct Block {
     pub label: String,
     pub color: Color32,
     pub look: Look,
+    /// Место рекламной вставки (секунды исходника).
+    pub insert: Option<f64>,
 }
 
 /// Зона пропуска на таймлайне.
@@ -48,6 +50,7 @@ const CANDIDATE_EDGE: Color32 = Color32::from_rgb(140, 160, 200);
 const REJECTED_COLOR: Color32 = Color32::from_gray(58);
 const ZONE_AUTO: Color32 = Color32::from_rgb(220, 150, 60);
 const ZONE_MANUAL: Color32 = Color32::from_rgb(220, 70, 70);
+const INSERT_COLOR: Color32 = Color32::from_rgb(250, 210, 60);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
@@ -55,11 +58,14 @@ pub enum Action {
     Seek { t: f64, exact: bool },
     Select(ShortId),
     Resize { id: ShortId, start: f64, end: f64 },
+    /// Маркер вставки выбранного шортса тянут; `snap` — прилипать к паузам (без Shift).
+    MoveInsert { id: ShortId, t: f64, snap: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Drag {
     Seek,
+    Insert { id: ShortId },
     Start { id: ShortId, end: f64 },
     End { id: ShortId, start: f64 },
 }
@@ -179,11 +185,13 @@ impl Timeline {
             }
         }
 
-        // Что под указателем: край выбранного шортса или блок.
+        // Что под указателем: маркер вставки или край выбранного шортса, или блок.
         let edge_at = |x: f32| -> Option<Drag> {
             let b = blocks.iter().find(|b| Some(b.id) == selected)?;
             let (x0, x1) = (v.t_to_x(b.start, rect), v.t_to_x(b.end, rect));
-            if (x - x1).abs() <= EDGE_GRAB {
+            if b.insert.is_some_and(|t| (x - v.t_to_x(t, rect)).abs() <= EDGE_GRAB) {
+                Some(Drag::Insert { id: b.id })
+            } else if (x - x1).abs() <= EDGE_GRAB {
                 Some(Drag::End { id: b.id, start: b.start })
             } else if (x - x0).abs() <= EDGE_GRAB {
                 Some(Drag::Start { id: b.id, end: b.end })
@@ -201,9 +209,10 @@ impl Timeline {
 
         if let Some(p) = resp.hover_pos()
             && track.contains(p)
-            && (edge_at(p.x).is_some() || matches!(self.drag, Some(Drag::Start { .. } | Drag::End { .. })))
+            && (edge_at(p.x).is_some() || matches!(self.drag, Some(Drag::Start { .. } | Drag::End { .. } | Drag::Insert { .. })))
         {
-            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            let insert = matches!(self.drag, Some(Drag::Insert { .. })) || matches!(edge_at(p.x), Some(Drag::Insert { .. }));
+            ui.ctx().set_cursor_icon(if insert { CursorIcon::Grab } else { CursorIcon::ResizeHorizontal });
         }
 
         if resp.drag_started() {
@@ -219,6 +228,10 @@ impl Timeline {
                 Drag::Seek => actions.push(Action::Seek { t, exact: finished }),
                 Drag::Start { id, end } => actions.push(Action::Resize { id, start: t.min(end), end }),
                 Drag::End { id, start } => actions.push(Action::Resize { id, start, end: t.max(start) }),
+                Drag::Insert { id } => {
+                    let snap = !ui.input(|i| i.modifiers.shift);
+                    actions.push(Action::MoveInsert { id, t, snap });
+                }
             }
             if finished {
                 self.drag = None;
@@ -312,6 +325,17 @@ impl Timeline {
                 if galley.size().x < r.width() - 6.0 {
                     painter.galley(Pos2::new(r.min.x.max(rect.min.x) + 4.0, r.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
                 }
+            }
+            // Вставка: жёлтая черта с треугольником сверху (у выбранного — ярче, её можно тянуть).
+            if let Some(t) = b.insert {
+                let x = v.t_to_x(t, rect);
+                let c = if is_sel { INSERT_COLOR } else { INSERT_COLOR.gamma_multiply(0.6) };
+                painter.line_segment([Pos2::new(x, r.min.y), Pos2::new(x, r.max.y)], Stroke::new(2.0, c));
+                painter.add(egui::Shape::convex_polygon(
+                    vec![Pos2::new(x - 5.0, r.min.y), Pos2::new(x + 5.0, r.min.y), Pos2::new(x, r.min.y + 7.0)],
+                    c,
+                    Stroke::NONE,
+                ));
             }
         }
 

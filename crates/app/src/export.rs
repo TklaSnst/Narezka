@@ -70,6 +70,9 @@ impl App {
                 let short = batch.short(id)?;
                 let source = batch.source(short.source_id)?;
                 let info = source.info.as_ref()?;
+                let (template, banner_layers) = batch.template_for(id).with_banner_layers(self.banner_art(Some(id)).as_ref());
+                let template = template.with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() });
+                let insert = self.insert_info(id).map(|i| i.job(&template, &banner_layers));
                 Some(RenderJob {
                     input: source.path.clone(),
                     src_size: (info.width, info.height),
@@ -77,10 +80,8 @@ impl App {
                     has_audio: info.has_audio,
                     start: short.start,
                     end: short.end,
-                    template: batch
-                        .template_for(id)
-                        .with_banner(self.banner_art(Some(id)).as_ref())
-                        .with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() }),
+                    template,
+                    insert,
                     subtitles: self
                         .transcript_of(short.source_id)
                         .map(|t| crate::subtitles::short_words(&t, short))
@@ -228,6 +229,18 @@ impl App {
             if self.banner_missing() {
                 ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr("banner-missing"));
             }
+            if self.insert_missing() {
+                ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr("insert-missing"));
+            }
+            let warn = egui::Color32::from_rgb(235, 180, 60);
+            let unplaced = self.shorts_without_insert();
+            if unplaced > 0 {
+                ui.colored_label(warn, self.i18n.tr_args("insert-unplaced-export", &[("n", (unplaced as i64).into())]));
+            }
+            let long = self.shorts_too_long();
+            if long > 0 {
+                ui.colored_label(warn, self.i18n.tr_args("export-too-long", &[("n", (long as i64).into())]));
+            }
             if ui.add_enabled(n > 0, start).clicked() {
                 self.remember_batch();
                 self.start_render(jobs);
@@ -281,11 +294,22 @@ impl App {
     }
 
     fn plan_ui(&self, ui: &mut egui::Ui, jobs: &[RenderJob]) {
-        egui::Grid::new("plan").striped(true).num_columns(3).spacing([16.0, 4.0]).show(ui, |ui| {
+        egui::Grid::new("plan").striped(true).num_columns(4).spacing([16.0, 4.0]).show(ui, |ui| {
             for j in jobs {
                 ui.monospace(file_name(&j.dest)).on_hover_text(j.dest.display().to_string());
                 ui.label(file_name(&j.input));
                 ui.label(format!("{} – {}", fmt::clock_ms(j.start), fmt::clock_ms(j.end)));
+                let d = j.duration();
+                let mut text = fmt::duration(d);
+                if j.insert.is_some() {
+                    text = self.i18n.tr_args("export-with-insert", &[("total", text.into())]);
+                }
+                if d > sc_core::SHORTS_MAX {
+                    ui.colored_label(egui::Color32::from_rgb(235, 180, 60), format!("⚠ {text}"))
+                        .on_hover_text(self.i18n.tr("insert-too-long"));
+                } else {
+                    ui.label(text);
+                }
                 ui.end_row();
             }
         });

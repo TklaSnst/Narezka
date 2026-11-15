@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::banner::Banner;
+use crate::insert::{BatchInsert, insert_inside};
 use crate::library::{self, DEFAULT_BUILTIN, TemplateRef};
 use crate::subtitles::SubtitleEdits;
 use crate::template::{Canvas, Template};
@@ -160,6 +161,12 @@ pub struct Short {
     /// Этот шортс — без баннера пачки.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_banner: bool,
+    /// Место вставки пачки — секунды исходника (обычно пауза между фразами); `None` — не отмечено.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_at: Option<f64>,
+    /// Этот шортс — без вставки пачки.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_insert: bool,
 }
 
 impl Short {
@@ -180,6 +187,8 @@ impl Short {
             template: None,
             subtitles: SubtitleEdits::default(),
             no_banner: false,
+            insert_at: None,
+            no_insert: false,
         }
     }
 
@@ -320,6 +329,9 @@ pub struct Batch {
     /// Баннер на все шортсы пачки; `None` — без баннера.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub banner: Option<Banner>,
+    /// Рекламная вставка шортсов пачки; `None` — без вставки. Место — у каждого шортса (`Short::insert_at`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert: Option<BatchInsert>,
 }
 
 /// Настройки пачки для «Сделать как в прошлый раз?» (SPEC §4): хранятся в `history.toml`.
@@ -332,6 +344,8 @@ pub struct BatchPreset {
     pub template_ref: Option<TemplateRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub banner: Option<Banner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert: Option<BatchInsert>,
     pub output: OutputSettings,
 }
 
@@ -348,6 +362,7 @@ impl Default for Batch {
             output: OutputSettings::default(),
             allow_overlap: false,
             banner: None,
+            insert: None,
         }
     }
 }
@@ -360,16 +375,27 @@ impl Batch {
             template: self.template.clone(),
             template_ref: self.template_ref.clone(),
             banner: self.banner.clone(),
+            insert: self.insert.clone(),
             output: self.output.clone(),
         }
     }
 
-    /// «Как в прошлый раз»: шаблон, баннер и вывод из пресета; исходники и шортсы не трогаются.
+    /// «Как в прошлый раз»: шаблон, баннер, вставка и вывод из пресета; исходники и шортсы не трогаются.
     pub fn apply_preset(&mut self, p: &BatchPreset) {
         self.template = p.template.clone();
         self.template_ref = p.template_ref.clone();
         self.banner = p.banner.clone();
+        self.insert = p.insert.clone();
         self.output = p.output.clone();
+    }
+
+    /// Вставка шортса `id` и её время (секунды исходника): есть вставка пачки, шортс от неё не отказался
+    /// и место отмечено внутри шортса.
+    pub fn insert_for(&self, id: ShortId) -> Option<(&BatchInsert, f64)> {
+        let ins = self.insert.as_ref()?;
+        let s = self.short(id).filter(|s| !s.no_insert)?;
+        let at = s.insert_at.filter(|&at| insert_inside(at, s.start, s.end))?;
+        Some((ins, at))
     }
 
     /// Баннер шортса `id`: баннер пачки, если шортс от него не отказался.
@@ -531,6 +557,9 @@ impl Batch {
             }
         }
         merged.subtitles.merge(&next.subtitles);
+        if merged.insert_at.is_none() {
+            merged.insert_at = next.insert_at;
+        }
         for f in &next.flags {
             if !merged.flags.contains(f) {
                 merged.flags.push(*f);

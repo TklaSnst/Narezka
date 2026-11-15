@@ -6,6 +6,7 @@ pub mod asset;
 pub mod banner;
 pub mod batch;
 pub mod geometry;
+pub mod insert;
 pub mod library;
 pub mod paths;
 pub mod settings;
@@ -18,6 +19,10 @@ pub use batch::{
     BatchPreset,
     Batch, BatchError, Codec, ConflictPolicy, Container, EncoderPref, MediaInfo, OutputSettings,
     MIN_SPLIT, Short, ShortFlag, ShortId, ShortStatus, Source, SourceId, SourceStatus, TimeRange,
+};
+pub use insert::{
+    BatchInsert, INSERT_EDGE, InsertFit, InsertMode, InsertPlan, InsertZ, SHORTS_MAX, insert_fit, insert_inside, pauses,
+    snap_to_pause,
 };
 pub use geometry::{Color, Rect, rounded_rect_coverage};
 pub use library::{LibraryError, TemplateRef, UserTemplate, UserTemplates};

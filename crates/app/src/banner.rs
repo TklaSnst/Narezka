@@ -168,6 +168,7 @@ impl App {
             let rect = self.batch.template.banner_slot().map(|i| self.batch.template.layers[i].rect());
             self.history.record(Usage { asset: b.asset, role: AssetKind::Banner, at: now, rect });
         }
+        self.remember_insert(now);
         self.history.last_batch = Some(self.batch.preset(now));
         self.preset_offer = false;
         if let Err(e) = sc_library::save_history(&self.paths.history_file(), &self.history) {
@@ -191,6 +192,13 @@ impl App {
             },
             None => self.i18n.tr("banner-none"),
         };
+        let insert = match &p.insert {
+            Some(i) => match self.assets.get(i.asset) {
+                Some(a) => a.name.clone(),
+                None => self.i18n.tr("preset-banner-gone"),
+            },
+            None => self.i18n.tr("insert-none"),
+        };
         let dir = p.output.dir.as_ref().map_or_else(|| self.i18n.tr("preset-dir-default"), |d| d.display().to_string());
         let when = crate::fmt::date(p.at);
         let mut answer = None;
@@ -206,6 +214,9 @@ impl App {
                 ui.end_row();
                 ui.label(self.i18n.tr("preset-banner"));
                 ui.strong(banner);
+                ui.end_row();
+                ui.label(self.i18n.tr("preset-insert"));
+                ui.strong(insert);
                 ui.end_row();
                 ui.label(self.i18n.tr("preset-output"));
                 ui.strong(dir);
@@ -226,6 +237,9 @@ impl App {
                 self.batch.apply_preset(&p);
                 if self.banner_missing() {
                     self.batch.banner = None;
+                }
+                if self.insert_missing() {
+                    self.batch.insert = None;
                 }
                 self.preset_offer = false;
             }

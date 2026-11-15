@@ -341,6 +341,7 @@ impl App {
                 Key::M,
                 Key::Z,
                 Key::N,
+                Key::V,
             ];
             (i.modifiers.shift, keys.into_iter().filter(|k| i.key_pressed(*k)).collect::<Vec<_>>())
         });
@@ -365,6 +366,7 @@ impl App {
                 Key::M => self.merge_selected(),
                 Key::Z => self.add_zone_from_marks(),
                 Key::N => self.next_candidate(),
+                Key::V => self.insert_here(),
                 Key::ArrowLeft if shift => self.seek_to(pos - JUMP, true),
                 Key::ArrowRight if shift => self.seek_to(pos + JUMP, true),
                 Key::ArrowLeft => self.player.as_mut().unwrap().frame_step(false),
@@ -516,6 +518,7 @@ impl App {
                     _ => String::new(),
                 },
                 color: timeline::block_color(n.unwrap_or(1) - 1),
+                insert: self.batch.insert_for(s.id).map(|(_, at)| at),
                 look: match s.status {
                     ShortStatus::Accepted => Look::Accepted,
                     ShortStatus::Candidate => Look::Candidate,
@@ -544,6 +547,7 @@ impl App {
                 Action::Seek { t, exact } => self.seek_to(t, exact),
                 Action::Select(id) => self.select_short(Some(id)),
                 Action::Resize { id, start, end } => self.resize_short(id, start, end),
+                Action::MoveInsert { id, t, snap } => self.place_insert(id, t, snap),
             }
         }
     }
@@ -599,6 +603,7 @@ impl App {
         let mut act: Option<Deferred> = None;
         // Нижняя часть (зоны) — фиксированной высоты, список — всё остальное.
         egui::Panel::bottom("cut-zones").resizable(false).show(ui, |ui| self.zones_ui(ui, source, &mut act));
+        egui::Panel::bottom("cut-insert").resizable(false).show(ui, |ui| self.insert_ui(ui));
         if self.cut.selected.is_some() && transcript.is_some() {
             egui::Panel::bottom("cut-sublist").resizable(false).show(ui, |ui| self.subtitle_list_ui(ui));
         }

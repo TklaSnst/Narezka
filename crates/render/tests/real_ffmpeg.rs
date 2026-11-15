@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
 use sc_core::{AccentMode, Align, Background, BannerArt, BannerSide, BannerText, Border, Color, Layer, OutputSettings, Paint, Rect, Shadow, SubWord, SubtitleMode, Template, VAlign};
-use sc_render::{Encoder, RenderError, RenderJob};
+use sc_render::{Encoder, InsertJob, RenderError, RenderJob};
 
 fn ffmpeg(args: &[&str]) -> Option<String> {
     let out = Command::new("ffmpeg").args(["-nostdin", "-hide_banner", "-v", "error"]).args(args).output().ok()?;
@@ -34,6 +34,7 @@ fn job(dir: &Path, input: &Path, name: &str) -> RenderJob {
         end: 1.5,
         template,
         subtitles: vec![],
+        insert: None,
         output: OutputSettings { video_bitrate_kbps: 2000, ..Default::default() },
         encoder: Encoder { name: "libx264".into(), vaapi_device: None },
         dest: dir.join(name),
@@ -253,4 +254,95 @@ fn renders_banners() {
         .unwrap();
     let d: f64 = String::from_utf8_lossy(&dur.stdout).trim().parse().unwrap();
     assert!((d - 2.5).abs() < 0.1, "длительность как у отрезка: {d}");
+}
+
+/// Наибольшая громкость звука на участке `[t, t + d)`, дБ.
+fn max_volume(path: &Path, t: f64, d: f64) -> f64 {
+    let out = Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-ss", &format!("{t:.3}"), "-t", &format!("{d:.3}"), "-i"])
+        .arg(path)
+        .args(["-vn", "-af", "volumedetect", "-f", "null", "-"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let line = err.lines().find(|l| l.contains("max_volume:")).unwrap_or_else(|| panic!("{err}"));
+    line.split("max_volume:").nth(1).unwrap().trim().trim_end_matches(" dB").parse().unwrap()
+}
+
+fn duration_of(path: &Path, stream: &str) -> f64 {
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", stream, "-show_entries", "stream=duration", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+/// Вставка: основное видео стоит, вставка идёт в слоте или на весь экран, звук после неё не разъезжается.
+#[test]
+fn renders_inserts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = |n: &str| tmp.path().join(n);
+    let made = ffmpeg(&[
+        "-f", "lavfi", "-i", "color=c=blue:s=640x360:r=30:d=4",
+        "-f", "lavfi", "-i", "sine=f=440:d=4",
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", p("src.mp4").to_str().unwrap(),
+    ]);
+    // Горизонтальная без звука и вертикальная со звуком, по 1 с.
+    let wide = ffmpeg(&[
+        "-f", "lavfi", "-i", "color=c=red:s=640x360:r=25:d=1",
+        "-c:v", "libx264", "-preset", "ultrafast", p("wide.mp4").to_str().unwrap(),
+    ]);
+    let tall = ffmpeg(&[
+        "-f", "lavfi", "-i", "color=c=lime:s=360x640:r=30:d=1",
+        "-f", "lavfi", "-i", "sine=f=1000:d=1",
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", p("tall.mp4").to_str().unwrap(),
+    ]);
+    if made.is_none() || wide.is_none() || tall.is_none() {
+        eprintln!("ffmpeg с libx264 недоступен — тест пропущен");
+        return;
+    }
+    let avg = |path: &Path, t: f64, r: (u32, u32, u32, u32)| {
+        let px = frame_rgb(path, t, r);
+        let n = px.len() as u32;
+        [0, 1, 2].map(|k| px.iter().map(|c| c[k] as u32).sum::<u32>() / n)
+    };
+
+    // В слот: шортс 0.5…2.5 с, вставка в 1.5 с (1.0 с от начала) — итог 3 с.
+    let mut j = job(tmp.path(), &p("src.mp4"), "slot.mp4");
+    j.end = 2.5;
+    j.template.background = Background::Color { color: Color::BLACK };
+    let plan = j.template.insert_plan(sc_core::InsertMode::Slot, &[], false);
+    j.insert = Some(InsertJob { path: p("wide.mp4"), at: 1.5, duration: 1.0, size: (640, 360), has_audio: false, plan });
+    j.run(&AtomicBool::new(false), |_| {}).unwrap();
+    let slot = (440, 900, 200, 100);
+    let [r, g, b] = avg(&j.dest, 0.5, slot);
+    assert!(b > 200 && r < 40, "до вставки — исходник: {r} {g} {b}");
+    let [r, g, b] = avg(&j.dest, 1.5, slot);
+    assert!(r > 200 && b < 40, "вставка в слоте: {r} {g} {b}");
+    let [r, g, b] = avg(&j.dest, 2.5, slot);
+    assert!(b > 200 && r < 40, "после вставки — исходник: {r} {g} {b}");
+    for s in ["v:0", "a:0"] {
+        let d = duration_of(&j.dest, s);
+        assert!((d - 3.0).abs() < 0.08, "{s}: {d}");
+    }
+    // Звук исходника — до и после, во время вставки (без звука) — тишина.
+    assert!(max_volume(&j.dest, 0.2, 0.6) > -30.0);
+    assert!(max_volume(&j.dest, 1.1, 0.8) < -60.0, "во время вставки тихо");
+    assert!(max_volume(&j.dest, 2.1, 0.6) > -30.0);
+
+    // На весь экран, со звуком вставки.
+    let mut j = job(tmp.path(), &p("src.mp4"), "full.mp4");
+    j.end = 2.5;
+    let plan = j.template.insert_plan(sc_core::InsertMode::Fullscreen, &[], false);
+    j.insert = Some(InsertJob { path: p("tall.mp4"), at: 1.5, duration: 1.0, size: (360, 640), has_audio: true, plan });
+    j.run(&AtomicBool::new(false), |_| {}).unwrap();
+    let top = (100, 100, 200, 200);
+    let [r, g, b] = avg(&j.dest, 1.5, top);
+    assert!(g > 200 && r < 60 && b < 60, "вставка на весь экран: {r} {g} {b}");
+    let [r, g, b] = avg(&j.dest, 2.5, top);
+    assert!(g < 100, "после вставки — шаблон: {r} {g} {b}");
+    assert!(max_volume(&j.dest, 1.1, 0.8) > -30.0, "звук вставки");
+    let d = duration_of(&j.dest, "a:0");
+    assert!((d - 3.0).abs() < 0.08, "звук: {d}");
 }

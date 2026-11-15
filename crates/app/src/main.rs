@@ -8,6 +8,7 @@ mod editor;
 mod export;
 mod fmt;
 mod import;
+mod insert;
 mod jobs;
 mod library;
 mod player;
@@ -272,14 +273,22 @@ impl eframe::App for App {
         self.design_sync_target();
         // Подстановки — по выбранному шортсу; шаблон — его (или тот, что правится на «Оформлении»).
         // Баннер — пачки или выбранного шортса («без баннера» у шортса видно сразу).
+        // Вставка — у выбранного шортса, по плану для этого же шаблона (с баннером).
         let template = self.player.is_some().then(|| {
             let banner = self.banner_art(self.cut.selected);
-            self.preview_template(self.tab == Tab::Design).with_banner(banner.as_ref()).with_vars(&templates::preview_vars(self))
+            let (t, banner_layers) = self.preview_template(self.tab == Tab::Design).with_banner_layers(banner.as_ref());
+            let t = t.with_vars(&templates::preview_vars(self));
+            let insert = (self.cut.selected)
+                .filter(|_| matches!(self.tab, Tab::Cut | Tab::Design))
+                .and_then(|id| self.insert_info(id))
+                .map(|i| i.preview(&t, &banner_layers));
+            (t, insert)
         });
         let design = self.tab == Tab::Design;
-        let subs = template.as_ref().filter(|t| t.has_subtitles()).and_then(|_| self.subtitle_input(design));
-        if let (Some(p), Some(template)) = (&mut self.player, template) {
+        let subs = template.as_ref().filter(|(t, _)| t.has_subtitles()).and_then(|_| self.subtitle_input(design));
+        if let (Some(p), Some((template, insert))) = (&mut self.player, template) {
             p.set_subtitles(subs);
+            p.set_insert(insert);
             // Превью играет только на вкладках с ним.
             if !matches!(self.tab, Tab::Cut | Tab::Design) {
                 p.set_paused(true);

@@ -78,7 +78,7 @@ cut-mark-out = Out (O) ]
 cut-add-short = + Short (Enter)
 cut-delete-short = Delete (Del)
 cut-zoom-fit = Whole video
-cut-timeline-hint = Wheel — zoom, Shift+wheel — scroll, click — seek. Drag the edges of the selected short to adjust it. N — next candidate, Esc — deselect.
+cut-timeline-hint = Wheel — zoom, Shift+wheel — scroll, click — seek. Drag the edges of the selected short or its yellow insert marker. N — next candidate, V — insert at cursor, Esc — deselect.
 cut-shorts-empty = No shorts left. Mark one by hand: in (I), out (O), Enter.
 cut-err-no-in = Mark the start first (I)
 cut-err-bad-range = The short must end after it starts
@@ -473,3 +473,45 @@ preset-output = Folder
 preset-dir-default = next to the source
 preset-yes = Yes, same as last time
 preset-no = No, start fresh
+
+## Insert (step 5.3)
+insert-title = Ad insert
+insert-none = No insert
+insert-clip = Clip
+insert-missing = ⚠ The batch insert is not in the library (deleted or its file is gone) — shorts will be rendered without it.
+insert-library-empty = No videos in the library — add an insert…
+insert-mode = Show
+insert-mode-auto = Auto: { $mode }
+insert-mode-hint = Auto — by the clip orientation ({ $orientation }): vertical goes full screen, the rest — into the video slot.
+insert-mode-fullscreen = full screen
+insert-mode-slot = in the video slot
+insert-hide-banner-hint = Remembered for the clip: the next batch with it does the same.
+insert-unplaced = Not placed: { $n }
+insert-place-all = Place
+insert-place-all-hint = Shorts without an insert point get one in a pause near the middle.
+insert-select-short = Select a short to set its insert point (drag the marker on the timeline; Shift — no snapping to pauses).
+insert-skip-short = No insert on this short
+insert-at = Insert at { $at } from the start
+insert-not-placed = Insert point not set
+insert-here = At cursor
+insert-here-hint = Insert point — in the pause next to the cursor (V).
+insert-play = ▶ Insert
+insert-play-hint = Play from the insert point: the video stops, the insert plays, then the video goes on.
+insert-remove = Remove the insert point
+insert-total = Total { $total } (short { $short } + insert { $insert })
+insert-too-long = longer than 3 minutes — YouTube won't take it as a Short
+insert-playing = Insert playing: { $t } / { $d }
+insert-unplaced-export = ⚠ { $n ->
+    [one] { $n } short has no insert point — it will be rendered without the insert.
+   *[other] { $n } shorts have no insert point — they will be rendered without the insert.
+}
+export-too-long = ⚠ { $n ->
+    [one] { $n } short is longer than 3 minutes (with the insert) — YouTube won't take it as a Short.
+   *[other] { $n } shorts are longer than 3 minutes (with the insert) — YouTube won't take them as Shorts.
+}
+export-with-insert = { $total } with the insert
+library-use-insert = Use as the batch insert
+library-use-insert-hint = The clip goes into every short of the batch; its point is set on the Cut timeline.
+library-is-insert = ✔ Batch insert
+library-insert-set = “{ $name }” is the batch insert now.
+preset-insert = Insert

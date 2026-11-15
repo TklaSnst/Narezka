@@ -80,7 +80,7 @@ cut-mark-out = Конец (O) ]
 cut-add-short = + Шортс (Enter)
 cut-delete-short = Удалить (Del)
 cut-zoom-fit = Весь ролик
-cut-timeline-hint = Колесо — масштаб, Shift+колесо — прокрутка, клик — перемотка. Края выбранного шортса можно тянуть. N — следующий кандидат, Esc — снять выбор.
+cut-timeline-hint = Колесо — масштаб, Shift+колесо — прокрутка, клик — перемотка. Края выбранного шортса и жёлтый маркер вставки можно тянуть. N — следующий кандидат, V — вставка у курсора, Esc — снять выбор.
 cut-shorts-empty = Все кандидаты убраны. Шортс можно отметить вручную: начало (I), конец (O), Enter.
 cut-err-no-in = Сначала отметьте начало (I)
 cut-err-bad-range = Конец шортса должен быть позже начала
@@ -481,3 +481,45 @@ preset-output = Папка
 preset-dir-default = рядом с исходником
 preset-yes = Да, как в прошлый раз
 preset-no = Нет, заново
+
+## Вставка (шаг 5.3)
+insert-title = Рекламная вставка
+insert-none = Без вставки
+insert-clip = Клип
+insert-missing = ⚠ Вставки пачки нет в библиотеке (удалена или пропал файл) — шортсы будут без неё.
+insert-library-empty = В библиотеке нет видео — добавить вставку…
+insert-mode = Показ
+insert-mode-auto = Авто: { $mode }
+insert-mode-hint = Авто — по ориентации клипа ({ $orientation }): вертикальный — на весь экран, остальные — в место видео.
+insert-mode-fullscreen = на весь экран
+insert-mode-slot = в место видео
+insert-hide-banner-hint = Запоминается у клипа: при следующей пачке с ним — так же.
+insert-unplaced = Без места: { $n }
+insert-place-all = Расставить
+insert-place-all-hint = Шортсам без места вставки — в паузу между фразами ближе к середине.
+insert-select-short = Выберите шортс, чтобы поставить место вставки (маркер на таймлайне тянется мышью, Shift — без прилипания к паузам).
+insert-skip-short = Этот шортс — без вставки
+insert-at = Вставка через { $at } от начала
+insert-not-placed = Место вставки не отмечено
+insert-here = У курсора
+insert-here-hint = Место вставки — в паузе рядом с курсором (V).
+insert-play = ▶ Вставка
+insert-play-hint = Проиграть с места вставки: основное видео встанет, пройдёт вставка, затем продолжится.
+insert-remove = Убрать место вставки
+insert-total = Итого { $total } (шортс { $short } + вставка { $insert })
+insert-too-long = длиннее 3 минут — YouTube не примет как Shorts
+insert-playing = Идёт вставка: { $t } / { $d }
+insert-unplaced-export = ⚠ { $n ->
+    [one] У { $n } шортса не отмечено место вставки — он будет без неё.
+   *[other] У { $n } шортсов не отмечено место вставки — они будут без неё.
+}
+export-too-long = ⚠ { $n ->
+    [one] { $n } шортс длиннее 3 минут (со вставкой) — YouTube не примет его как Shorts.
+   *[other] { $n } шортсов длиннее 3 минут (со вставкой) — YouTube не примет их как Shorts.
+}
+export-with-insert = { $total } со вставкой
+library-use-insert = Сделать вставкой пачки
+library-use-insert-hint = Клип пойдёт в каждый шортс пачки; место — на таймлайне «Нарезки».
+library-is-insert = ✔ Вставка пачки
+library-insert-set = «{ $name }» — теперь вставка пачки.
+preset-insert = Вставка

@@ -188,3 +188,36 @@ fn short_template_overrides_batch() {
     let json = serde_json::to_string(&b).unwrap();
     assert_eq!(serde_json::from_str::<Batch>(&json).unwrap(), b);
 }
+
+#[test]
+fn insert_per_short_and_preset() {
+    let (mut b, src) = batch_with_source(100.0);
+    let a = b.add_short(Short::manual(src, 10.0, 40.0)).unwrap();
+    b.short_mut(a).unwrap().insert_at = Some(25.0);
+    assert!(b.insert_for(a).is_none(), "у пачки нет вставки");
+    let asset = AssetId::new();
+    b.insert = Some(BatchInsert { asset, mode: None });
+    assert_eq!(b.insert_for(a).map(|(i, at)| (i.asset, at)), Some((asset, 25.0)));
+    // вне шортса (после правки краёв) — не считается
+    b.short_mut(a).unwrap().insert_at = Some(40.1);
+    assert!(b.insert_for(a).is_none());
+    b.short_mut(a).unwrap().insert_at = Some(25.0);
+    b.short_mut(a).unwrap().no_insert = true;
+    assert!(b.insert_for(a).is_none(), "шортс без вставки");
+    b.short_mut(a).unwrap().no_insert = false;
+
+    // при разделении место остаётся у той части, где оно есть
+    let second = b.split_short(a, 20.0).unwrap();
+    assert!(b.insert_for(a).is_none());
+    assert_eq!(b.insert_for(second).map(|(_, at)| at), Some(25.0));
+    b.merge_with_next(a).unwrap();
+    assert_eq!(b.insert_for(a).map(|(_, at)| at), Some(25.0));
+
+    // «как в прошлый раз» переносит вставку пачки
+    let p = b.preset(1);
+    let toml_text = toml::to_string_pretty(&p).unwrap();
+    let back: BatchPreset = toml::from_str(&toml_text).unwrap();
+    let mut fresh = Batch::default();
+    fresh.apply_preset(&back);
+    assert_eq!(fresh.insert, b.insert);
+}

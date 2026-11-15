@@ -17,7 +17,7 @@ pub use batch::{
 pub use geometry::{Color, Rect, rounded_rect_coverage};
 pub use library::{LibraryError, TemplateRef, UserTemplate, UserTemplates};
 pub use paths::Paths;
-pub use subtitles::{Phrase, SubWord, SubtitleEdits, SubtitleTrack};
+pub use subtitles::{EditedWord, Phrase, SpeechWord, SubWord, SubtitleEdits, SubtitleTrack, WordText, word_id, word_ids};
 pub use settings::{AnalysisSettings, Language, Settings};
 pub use template::{
     Align, AccentMode, Background, Border, Canvas, Layer, Outline, Paint, Shadow, SubtitleMode, Template, TemplateError,

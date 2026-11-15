@@ -49,14 +49,9 @@ impl Bitmap {
         }
     }
 
-    /// PAM (`P7`, `RGB_ALPHA`, альфа не premultiplied) — читает любой ffmpeg, без зависимостей.
-    pub fn to_pam(&self) -> Vec<u8> {
-        let header = format!(
-            "P7\nWIDTH {}\nHEIGHT {}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n",
-            self.width, self.height
-        );
-        let mut out = header.into_bytes();
-        out.reserve(self.data.len());
+    /// RGBA с обычной (не premultiplied) альфой.
+    fn straight(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.data.len());
         for px in self.data.as_chunks::<4>().0 {
             let a = px[3];
             if a == 0 {
@@ -67,6 +62,48 @@ impl Bitmap {
             }
         }
         out
+    }
+
+    /// PAM (`P7`, `RGB_ALPHA`, альфа не premultiplied) — читает любой ffmpeg, без зависимостей.
+    pub fn to_pam(&self) -> Vec<u8> {
+        let header = format!(
+            "P7\nWIDTH {}\nHEIGHT {}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n",
+            self.width, self.height
+        );
+        let mut out = header.into_bytes();
+        out.extend(self.straight());
+        out
+    }
+
+    /// PNG (RGBA, альфа не premultiplied) с быстрым сжатием — для последовательностей растров (субтитры):
+    /// почти прозрачный растр в PNG в десятки раз меньше PAM.
+    pub fn to_png(&self) -> Vec<u8> {
+        use image::ImageEncoder;
+        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+        let mut out = Vec::new();
+        PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Sub)
+            .write_image(&self.straight(), self.width, self.height, image::ExtendedColorType::Rgba8)
+            .expect("PNG в память не падает");
+        out
+    }
+
+    /// Копирует `src` в точку (`x`, `y`) этого растра (без смешивания); выходящее за край отрезается.
+    pub fn blit(&mut self, src: &Bitmap, x: i32, y: i32) {
+        let x0 = x.max(0);
+        let x1 = (x + src.width as i32).min(self.width as i32);
+        if x1 <= x0 {
+            return;
+        }
+        let n = (x1 - x0) as usize * 4;
+        for sy in 0..src.height as i32 {
+            let dy = y + sy;
+            if !(0..self.height as i32).contains(&dy) {
+                continue;
+            }
+            let s = ((sy * src.width as i32 + (x0 - x)) * 4) as usize;
+            let d = ((dy * self.width as i32 + x0) * 4) as usize;
+            self.data[d..d + n].copy_from_slice(&src.data[s..s + n]);
+        }
     }
 }
 

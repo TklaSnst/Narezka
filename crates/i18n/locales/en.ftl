@@ -319,6 +319,12 @@ sub-mode-static = static
 sub-mode-highlight = word highlight
 sub-mode-reveal = reveal
 subtitles-sample = Your short subtitles look like this
+sublist-title = Short subtitles
+sublist-no-layer = The template has no subtitles layer — phrases are split as 3 words × 2 lines.
+sublist-empty = No speech in this short.
+sublist-seek = Go to phrase
+sublist-reset = Restore spoken text
+sublist-hint = Fix a phrase and press Enter (Esc cancels). You can add or remove words — the timing is shared among them.
 
 accent-color = by color
 accent-plate = with a plate

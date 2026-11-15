@@ -484,11 +484,7 @@ impl Batch {
                 merged.keywords.push(k.clone());
             }
         }
-        for &w in &next.subtitles.toggled {
-            if !merged.subtitles.toggled.contains(&w) {
-                merged.subtitles.toggled.push(w);
-            }
-        }
+        merged.subtitles.merge(&next.subtitles);
         for f in &next.flags {
             if !merged.flags.contains(f) {
                 merged.flags.push(*f);

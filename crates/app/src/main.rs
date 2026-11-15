@@ -10,6 +10,7 @@ mod import;
 mod jobs;
 mod player;
 mod raster_worker;
+mod sub_list;
 mod subtitle_worker;
 mod subtitles;
 mod templates;

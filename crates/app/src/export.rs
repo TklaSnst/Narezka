@@ -78,6 +78,10 @@ impl App {
                     start: short.start,
                     end: short.end,
                     template: batch.template_for(id).with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() }),
+                    subtitles: self
+                        .transcript_of(short.source_id)
+                        .map(|t| crate::subtitles::short_words(&t, short))
+                        .unwrap_or_default(),
                     output: batch.output.clone(),
                     encoder: encoder.clone(),
                     dest,

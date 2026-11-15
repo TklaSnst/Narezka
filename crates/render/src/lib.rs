@@ -6,6 +6,8 @@
 pub mod graph;
 pub mod job;
 pub mod naming;
+pub mod subtitles;
 
 pub use job::{Encoder, RenderError, RenderJob};
 pub use naming::plan_outputs;
+pub use subtitles::{SubtitleSeq, sequence as subtitle_sequence};

@@ -37,6 +37,8 @@ pub enum Input {
     BackgroundImage { fps: f64 },
     /// Фон-видео по кругу.
     BackgroundVideo { path: PathBuf },
+    /// Субтитры слоя `layer`: concat-список картинок с длительностями ([`crate::subtitles::SubtitleSeq`]).
+    Subtitles { layer: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,8 +62,9 @@ pub struct GraphParams {
     pub vaapi: bool,
 }
 
-/// Строит граф. Шаблон должен быть проверен (`Template::validate`), `art` — растры этого шаблона.
-pub fn build(template: &Template, art: &Art, p: &GraphParams) -> Graph {
+/// Строит граф. Шаблон должен быть проверен (`Template::validate`), `art` — растры этого шаблона,
+/// `subtitles` — слои субтитров, которым есть что показать: (номер слоя, левый верхний угол картинок).
+pub fn build(template: &Template, art: &Art, subtitles: &[(usize, i32, i32)], p: &GraphParams) -> Graph {
     let canvas = template.canvas;
     let (cw, ch) = (canvas.width, canvas.height);
     let out_fps = num(p.fps.unwrap_or(p.src_fps) as f32);
@@ -161,6 +164,11 @@ pub fn build(template: &Template, art: &Art, p: &GraphParams) -> Graph {
             let n = add_input(&mut inputs, Input::Sprite { layer: i, above: true });
             overlay(&mut chains, &mut base, format!("[{n}:v]"), x, y, false);
         }
+        if let Some(&(_, x, y)) = subtitles.iter().find(|s| s.0 == i) {
+            // Картинка держится до следующей (repeatlast) — переменная частота входа не важна.
+            let n = add_input(&mut inputs, Input::Subtitles { layer: i });
+            overlay(&mut chains, &mut base, format!("[{n}:v]"), x, y, false);
+        }
     }
 
     // Хвост: выходное разрешение и формат для кодировщика.
@@ -215,7 +223,7 @@ mod tests {
     }
 
     fn graph(t: &Template, p: &GraphParams) -> Graph {
-        build(t, &Art::new(t).unwrap(), p)
+        build(t, &Art::new(t).unwrap(), &[], p)
     }
 
     #[test]
@@ -323,6 +331,17 @@ mod tests {
         assert!(g.filter.contains("[1:v]fps=60,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"), "{}", g.filter);
         assert!(g.filter.contains("*0.5"), "{}", g.filter);
         assert!(g.filter.contains("overlay=0:656:shortest=1"), "{}", g.filter);
+    }
+
+    #[test]
+    fn subtitles_overlay_in_layer_order() {
+        let mut t = Template::minimal();
+        t.layers.push(Layer::BannerSlot { rect: Rect::new(0.0, 0.9, 1.0, 0.1) });
+        t.layers.insert(1, Layer::BannerSlot { rect: Rect::new(0.0, 0.0, 1.0, 0.1) });
+        let g = build(&t, &Art::new(&t).unwrap(), &[(1, 40, 1200)], &params((1920, 1080)));
+        assert_eq!(g.inputs, vec![Input::Subtitles { layer: 1 }]);
+        assert!(g.filter.contains("[base1][1:v]overlay=40:1200[base2]"), "{}", g.filter);
+        assert!(g.filter.ends_with("[base2]setsar=1,format=yuv420p[out]"), "{}", g.filter);
     }
 
     #[test]

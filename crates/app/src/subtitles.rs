@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use sc_analysis::Transcript;
 use sc_core::subtitles::keyword_hits;
-use sc_core::{Short, ShortId, SubWord, SubtitleEdits};
+use std::ops::Range;
+
+use sc_core::{EditedWord, Short, ShortId, SpeechWord, SubWord, SubtitleEdits, word_ids};
 
 use crate::App;
 use crate::player::SubtitleInput;
@@ -36,15 +38,44 @@ pub(crate) fn first_word_from(t: &Transcript, time: f64) -> usize {
     t.words.partition_point(|w| (w.start + w.end) / 2.0 < time)
 }
 
-/// Слова шортса — середина внутри [start, end); ключевые — по нарезке LLM, с ручными пометками поверх.
-pub(crate) fn short_words(t: &Transcript, short: &Short) -> Vec<SubWord> {
+/// Слова речи шортса — середина внутри [start, end).
+pub(crate) fn short_range(t: &Transcript, short: &Short) -> std::ops::Range<usize> {
     let first = first_word_from(t, short.start);
-    let words: Vec<_> = t.words[first..].iter().take_while(|w| (w.start + w.end) / 2.0 < short.end).collect();
+    let n = t.words[first..].iter().take_while(|w| (w.start + w.end) / 2.0 < short.end).count();
+    first..first + n
+}
+
+/// [`word_ids`] слов речи `range`: счёт одинаковых начал — с первого такого слова во всей речи, а не в куске.
+pub(crate) fn speech_ids(t: &Transcript, range: Range<usize>) -> Vec<i64> {
+    let ms = |i: usize| (t.words[i].start * 1000.0).round() as i64;
+    let mut from = range.start;
+    while from > 0 && from < t.words.len() && ms(from - 1) == ms(from) {
+        from -= 1;
+    }
+    let skip = range.start - from;
+    word_ids(t.words[from..range.end].iter().map(|w| w.start)).split_off(skip)
+}
+
+/// Слова речи шортса для правок: текст, время и [`sc_core::word_id`].
+pub(crate) fn speech_words<'a>(t: &'a Transcript, short: &Short) -> Vec<SpeechWord<'a>> {
+    let r = short_range(t, short);
+    let ids = speech_ids(t, r.clone());
+    t.words[r].iter().zip(ids).map(|(w, id)| (w.text.as_str(), w.start, w.end, id)).collect()
+}
+
+/// Слова речи шортса с правками текста (`EditedWord::src` — номер в [`speech_words`]).
+pub(crate) fn edited_words(t: &Transcript, short: &Short) -> Vec<EditedWord> {
+    short.subtitles.apply(speech_words(t, short))
+}
+
+/// Слова субтитров шортса: речь с правками текста; ключевые — по нарезке LLM, с ручными пометками поверх.
+pub(crate) fn short_words(t: &Transcript, short: &Short) -> Vec<SubWord> {
+    let words = edited_words(t, short);
     let auto = keyword_hits(words.iter().map(|w| w.text.as_str()), &short.keywords);
     words
-        .iter()
+        .into_iter()
         .zip(auto)
-        .map(|(w, auto)| SubWord { text: w.text.clone(), start: w.start, end: w.end, keyword: short.subtitles.keyword(w.start, auto) })
+        .map(|(w, auto)| SubWord { keyword: short.subtitles.keyword(w.key, auto), text: w.text, start: w.start, end: w.end })
         .collect()
 }
 
@@ -122,9 +153,26 @@ mod tests {
         assert_eq!(w.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["Настроим", "сервер,", "быстро."]);
         assert_eq!(w.iter().map(|w| w.keyword).collect::<Vec<_>>(), [false, true, false]);
         // Ручная пометка: снять автоматическую и добавить свою.
-        s.subtitles.toggle(1.5);
-        s.subtitles.toggle(2.0);
+        s.subtitles.toggle(sc_core::word_id(1.5, 0));
+        s.subtitles.toggle(sc_core::word_id(2.0, 0));
         let w = short_words(&t, &s);
         assert_eq!(w.iter().map(|w| w.keyword).collect::<Vec<_>>(), [false, false, true]);
+        // Правка текста: ключевые ищутся уже в исправленном.
+        s.subtitles.set_text(sc_core::word_id(1.0, 0), Some("Настроим серверы".into()));
+        let w = short_words(&t, &s);
+        assert_eq!(w.iter().map(|w| (w.text.as_str(), w.keyword)).collect::<Vec<_>>(), [
+            ("Настроим", false),
+            ("серверы", true),
+            ("сервер,", false),
+            ("быстро.", true)
+        ]);
+    }
+
+    #[test]
+    fn ids_count_same_starts_across_short_edge() {
+        let mut t = transcript(&[("а", 1.0), ("б", 1.0), ("в", 1.0), ("г", 2.0)]);
+        t.words[0].end = 1.0;
+        assert_eq!(speech_ids(&t, 1..4), sc_core::word_ids([1.0, 1.0, 1.0, 2.0])[1..].to_vec());
+        assert_eq!(speech_ids(&t, 0..2), sc_core::word_ids([1.0, 1.0]));
     }
 }

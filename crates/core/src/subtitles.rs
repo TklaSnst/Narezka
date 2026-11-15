@@ -37,36 +37,160 @@ pub struct SubtitleTrack {
     pub phrases: Vec<Phrase>,
 }
 
-/// Ручные правки субтитров шортса.
+/// Номер слова речи в правках: начало в мс исходника, а в старших битах — номер среди слов с тем же началом
+/// (whisper часто даёт соседним словам одно начало: «Перед» 28.90–28.91, «школой» 28.90–29.27).
+/// У первого такого слова номер — просто миллисекунды (так записаны пометки шага 4.1).
+pub fn word_id(start: f64, dup: usize) -> i64 {
+    (start * 1000.0).round() as i64 + ((dup as i64) << 32)
+}
+
+/// Номера [`word_id`] для слов по порядку (по их началам): одинаковые начала идут подряд.
+pub fn word_ids(starts: impl IntoIterator<Item = f64>) -> Vec<i64> {
+    let mut out = Vec::new();
+    let (mut prev, mut dup) = (None, 0);
+    for s in starts {
+        let ms = (s * 1000.0).round() as i64;
+        dup = if prev == Some(ms) { dup + 1 } else { 0 };
+        prev = Some(ms);
+        out.push(word_id(s, dup));
+    }
+    out
+}
+
+/// Ручные правки субтитров шортса. Слова речи — по [`word_id`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SubtitleEdits {
-    /// Слова (начало в мс исходника), у которых пометка «ключевое» обратна автоматической.
+    /// Слова, у которых пометка «ключевое» обратна автоматической ([`EditedWord::key`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toggled: Vec<i64>,
+    /// Исправленный текст слов речи: слово можно заменить несколькими (время делится поровну) или убрать (пусто).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texts: Vec<WordText>,
+}
+
+/// Исправленный текст слова речи `at` ([`word_id`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WordText {
+    pub at: i64,
+    pub text: String,
+}
+
+/// Слово речи для правки: текст, начало, конец (секунды исходника) и [`word_id`].
+pub type SpeechWord<'a> = (&'a str, f64, f64, i64);
+
+/// Слово субтитров после правки текста: `src` — номер слова речи (в переданном куске), из которого оно получилось;
+/// `key` — для пометки «ключевое»: номер слова речи, у второго и следующих слов замены — со сдвигом.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditedWord {
+    pub text: String,
+    pub start: f64,
+    pub end: f64,
+    pub src: usize,
+    pub key: i64,
 }
 
 impl SubtitleEdits {
     pub fn is_empty(&self) -> bool {
-        self.toggled.is_empty()
+        self.toggled.is_empty() && self.texts.is_empty()
     }
 
-    fn id(start: f64) -> i64 {
-        (start * 1000.0).round() as i64
+    /// Исправленный текст слова речи `id`, если он есть.
+    pub fn text(&self, id: i64) -> Option<&str> {
+        self.texts.iter().find(|t| t.at == id).map(|t| t.text.as_str())
     }
 
-    /// Ключевое ли слово с началом `start`, если автоматически оно `auto`.
-    pub fn keyword(&self, start: f64, auto: bool) -> bool {
-        auto ^ self.toggled.contains(&Self::id(start))
+    /// Задать текст слова речи `id`; `None` — вернуть текст речи.
+    pub fn set_text(&mut self, id: i64, text: Option<String>) {
+        self.texts.retain(|t| t.at != id);
+        if let Some(text) = text {
+            self.texts.push(WordText { at: id, text });
+        }
     }
 
-    /// Переключить пометку «ключевое» у слова с началом `start`.
-    pub fn toggle(&mut self, start: f64) {
-        let id = Self::id(start);
-        match self.toggled.iter().position(|&x| x == id) {
+    /// Слова речи с правками текста: заменённое несколькими словами делит своё время поровну,
+    /// убранное (пустой текст) пропадает.
+    pub fn apply<'a>(&self, words: impl IntoIterator<Item = SpeechWord<'a>>) -> Vec<EditedWord> {
+        let mut out = Vec::new();
+        for (src, (text, start, end, id)) in words.into_iter().enumerate() {
+            let Some(edit) = self.text(id) else {
+                out.push(EditedWord { text: text.to_owned(), start, end, src, key: id });
+                continue;
+            };
+            let tokens: Vec<&str> = edit.split_whitespace().collect();
+            let step = (end - start) / tokens.len().max(1) as f64;
+            for (k, t) in tokens.iter().enumerate() {
+                let s = start + step * k as f64;
+                out.push(EditedWord { text: (*t).to_owned(), start: s, end: s + step, src, key: id + ((k as i64) << 48) });
+            }
+        }
+        out
+    }
+
+    /// Новый текст для куска `edited[range]` слов после правки (`apply` от `originals`): слова нового текста
+    /// делятся поровну между словами речи этого куска; слова речи, у которых часть осталась за краем куска, её сохраняют.
+    /// Совпадает с речью — правка слова снимается.
+    pub fn set_range_text(&mut self, originals: &[SpeechWord], edited: &[EditedWord], range: Range<usize>, text: &str) {
+        let Some(first) = edited.get(range.start) else { return };
+        let last = &edited[range.end.max(range.start + 1).min(edited.len()) - 1];
+        let (a, b) = (first.src, last.src);
+        let prefix: Vec<&str> = edited[..range.start].iter().filter(|w| w.src == a).map(|w| w.text.as_str()).collect();
+        let suffix: Vec<&str> = edited[range.end.min(edited.len())..].iter().filter(|w| w.src == b).map(|w| w.text.as_str()).collect();
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        let srcs = a..b + 1;
+        // Слов нового текста меньше — последние слова речи остаются пустыми (убраны).
+        let parts = if tokens.len() >= srcs.len() {
+            even_split(0..tokens.len(), srcs.len())
+        } else {
+            (0..srcs.len()).map(|i| if i < tokens.len() { i..i + 1 } else { tokens.len()..tokens.len() }).collect()
+        };
+        for (k, (src, part)) in srcs.clone().zip(parts).enumerate() {
+            let mut words: Vec<&str> = Vec::new();
+            if k == 0 {
+                words.extend(&prefix);
+            }
+            words.extend(&tokens[part]);
+            if src == b {
+                words.extend(&suffix);
+            }
+            let new = words.join(" ");
+            let (orig, _, _, id) = originals[src];
+            self.set_text(id, (new != orig).then_some(new));
+        }
+    }
+
+    /// Снять правки текста у слов речи `originals[srcs]`.
+    pub fn reset_texts(&mut self, originals: &[SpeechWord], srcs: Range<usize>) {
+        for &(_, _, _, id) in &originals[srcs] {
+            self.set_text(id, None);
+        }
+    }
+
+    /// Добавить правки другого шортса (при объединении): свои — главнее.
+    pub fn merge(&mut self, other: &SubtitleEdits) {
+        for &w in &other.toggled {
+            if !self.toggled.contains(&w) {
+                self.toggled.push(w);
+            }
+        }
+        for t in &other.texts {
+            if !self.texts.iter().any(|m| m.at == t.at) {
+                self.texts.push(t.clone());
+            }
+        }
+    }
+
+    /// Ключевое ли слово `key` ([`EditedWord::key`]), если автоматически оно `auto`.
+    pub fn keyword(&self, key: i64, auto: bool) -> bool {
+        auto ^ self.toggled.contains(&key)
+    }
+
+    /// Переключить пометку «ключевое» у слова `key`.
+    pub fn toggle(&mut self, key: i64) {
+        match self.toggled.iter().position(|&x| x == key) {
             Some(i) => {
                 self.toggled.remove(i);
             }
-            None => self.toggled.push(id),
+            None => self.toggled.push(key),
         }
     }
 }
@@ -235,10 +359,45 @@ mod tests {
     #[test]
     fn manual_toggle() {
         let mut e = SubtitleEdits::default();
-        assert!(!e.keyword(1.234, false));
-        e.toggle(1.234);
-        assert!(e.keyword(1.2341, false) && !e.keyword(1.2341, true));
-        e.toggle(1.2339);
+        let id = word_id(1.234, 0);
+        assert_eq!(id, 1234, "у первого слова — просто мс (пометки шага 4.1)");
+        assert!(!e.keyword(id, false));
+        e.toggle(id);
+        assert!(e.keyword(id, false) && !e.keyword(id, true));
+        // Соседнее слово с тем же началом — другое.
+        assert!(!e.keyword(word_id(1.234, 1), false));
+        e.toggle(id);
+        assert!(e.is_empty());
+        assert_eq!(word_ids([1.0, 1.0, 1.0004, 2.0]), vec![1000, 1000 + (1 << 32), 1000 + (2 << 32), 2000]);
+    }
+
+    #[test]
+    fn text_edits_split_and_remove_words() {
+        // «Настроим» и «люмен» начинаются одновременно (так бывает у whisper).
+        let starts = [0.0, 0.0, 2.0, 3.0];
+        let ids = word_ids(starts);
+        let texts = ["Настроим", "люмен", "впн", "ээ"];
+        let orig: Vec<SpeechWord> = (0..4).map(|i| (texts[i], starts[i], starts[i] + 1.0, ids[i])).collect();
+        let mut e = SubtitleEdits::default();
+        e.set_text(ids[1], Some("Lumen VPN".into()));
+        e.set_text(ids[2], Some(String::new()));
+        let w = e.apply(orig.iter().copied());
+        let got: Vec<_> = w.iter().map(|w| (w.text.as_str(), w.start, w.src)).collect();
+        assert_eq!(got, [("Настроим", 0.0, 0), ("Lumen", 0.0, 1), ("VPN", 0.5, 1), ("ээ", 3.0, 3)]);
+        assert_ne!(w[1].key, w[2].key);
+
+        // Правка куска «VPN ээ» (часть слова 1 и слово 3): «Lumen» остаётся у слова 1.
+        e.set_range_text(&orig, &w, 2..4, "VPN.");
+        let w = e.apply(orig.iter().copied());
+        assert_eq!(w.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["Настроим", "Lumen", "VPN."]);
+        assert_eq!(e.text(ids[1]), Some("Lumen VPN."));
+        // Слов стало больше, чем слов речи, и текст вернулся к речи — правка снята.
+        let mut e = SubtitleEdits::default();
+        let w = e.apply(orig.iter().copied());
+        e.set_range_text(&orig, &w, 0..2, "Ну настроим люмен");
+        assert_eq!(e.text(ids[0]), Some("Ну настроим"));
+        assert_eq!(e.text(ids[1]), None);
+        e.reset_texts(&orig, 0..4);
         assert!(e.is_empty());
     }
 }

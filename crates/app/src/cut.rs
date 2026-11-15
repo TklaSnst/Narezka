@@ -44,6 +44,8 @@ pub struct CutState {
     text_scroll: f32,
     /// Прокрутить список шортсов к выбранному (после выбора не из списка).
     scroll_to_selected: bool,
+    /// Фраза субтитров, текст которой сейчас правят.
+    pub(crate) sub_edit: Option<crate::sub_list::SubEdit>,
 }
 
 fn batch_error_key(e: &BatchError) -> &'static str {
@@ -597,6 +599,9 @@ impl App {
         let mut act: Option<Deferred> = None;
         // Нижняя часть (зоны) — фиксированной высоты, список — всё остальное.
         egui::Panel::bottom("cut-zones").resizable(false).show(ui, |ui| self.zones_ui(ui, source, &mut act));
+        if self.cut.selected.is_some() && transcript.is_some() {
+            egui::Panel::bottom("cut-sublist").resizable(false).show(ui, |ui| self.subtitle_list_ui(ui));
+        }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if shorts.is_empty() {
                 let key = if has_cutting { "cut-shorts-empty" } else { "cut-no-analysis" };
@@ -792,10 +797,18 @@ impl App {
         let zones = self.zones(source);
         let selected_short = self.cut.selected.and_then(|id| self.batch.short(id));
         let selected = selected_short.map(|s| (s.start, s.end));
-        // Ключевые слова субтитров выбранного шортса — подчёркнуты.
-        let keywords: Vec<f64> = selected_short
-            .map(|s| crate::subtitles::short_words(&t, s).into_iter().filter(|w| w.keyword).map(|w| w.start).collect())
+        // Ключевые слова субтитров выбранного шортса — подчёркнуты (слово речи, если ключевое его первое слово после правки).
+        let keywords: Vec<i64> = selected_short
+            .map(|s| {
+                let edited = crate::subtitles::edited_words(&t, s);
+                let words = crate::subtitles::short_words(&t, s);
+                edited.iter().zip(words).filter(|(_, w)| w.keyword).map(|(e, _)| e.key).collect()
+            })
             .unwrap_or_default();
+        let shown = self.cut.text_first..(self.cut.text_first + TEXT_LINES).min(segs.len());
+        let shown_words = segs[shown.start].words.start..segs[shown.end - 1].words.end;
+        let ids = crate::subtitles::speech_ids(&t, shown_words.clone());
+        let id_of = |i: usize| ids[i - shown_words.start];
         let accepted: Vec<(f64, f64)> = (self.batch.shorts_of(source).into_iter())
             .filter(|s| s.status == ShortStatus::Accepted)
             .map(|s| (s.start, s.end))
@@ -812,7 +825,7 @@ impl App {
         let mut toggled = None;
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)));
         child.set_clip_rect(rect);
-        for seg in &segs[self.cut.text_first..(self.cut.text_first + TEXT_LINES).min(segs.len())] {
+        for seg in &segs[shown] {
             child.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(RichText::new(fmt::duration(seg.start)).monospace().small().weak());
@@ -829,7 +842,7 @@ impl App {
                         text = text.strikethrough().color(visuals.weak_text_color());
                     } else if inside(selected, mid) {
                         text = text.strong().color(Color32::WHITE);
-                        if keywords.contains(&w.start) {
+                        if keywords.contains(&id_of(i)) {
                             text = text.underline();
                         }
                     } else if !accepted.iter().any(|&r| inside(Some(r), mid)) {
@@ -840,7 +853,7 @@ impl App {
                         clicked = Some(i);
                     }
                     if r.secondary_clicked() && inside(selected, mid) {
-                        toggled = Some(i);
+                        toggled = Some(id_of(i));
                     }
                 }
             });
@@ -849,10 +862,10 @@ impl App {
         if let Some(i) = clicked {
             self.click_word(&t, i);
         }
-        if let Some(i) = toggled
+        if let Some(id) = toggled
             && let Some(mut s) = self.cut.selected.and_then(|id| self.batch.short(id)).cloned()
         {
-            s.subtitles.toggle(t.words[i].start);
+            s.subtitles.toggle(id);
             if let Err(e) = self.batch.update_short(s) {
                 log::warn!("пометка ключевого слова: {e}");
             }

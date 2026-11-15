@@ -2842,6 +2842,8 @@ dependencies = [
  "log",
  "sc-core",
  "sc-raster",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
 ]

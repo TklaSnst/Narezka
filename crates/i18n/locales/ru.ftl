@@ -326,6 +326,12 @@ sub-mode-static = статичный
 sub-mode-highlight = подсветка слова
 sub-mode-reveal = проявление
 subtitles-sample = Так выглядят субтитры вашего шортса
+sublist-title = Субтитры шортса
+sublist-no-layer = В шаблоне нет слоя субтитров — фразы разбиты по 3 слова в 2 строки.
+sublist-empty = В шортсе нет речи.
+sublist-seek = Перейти к фразе
+sublist-reset = Вернуть текст речи
+sublist-hint = Исправьте текст фразы и нажмите Enter (Esc — отмена). Слов может стать больше или меньше — время делится между ними.
 
 accent-color = цветом
 accent-plate = плашкой

@@ -6,12 +6,13 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use sc_core::{Codec, Container, OutputSettings, Template};
+use sc_core::{Codec, Container, OutputSettings, SubWord, Template};
 
 use sc_raster::Art;
 
 use crate::graph::{self, GraphParams, Input};
 use crate::naming::part_path;
+use crate::subtitles::{self, SubtitleSeq};
 
 /// Кодировщик, выбранный по `Capabilities` (рендер не проверяет ffmpeg сам).
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +35,8 @@ pub struct RenderJob {
     pub start: f64,
     pub end: f64,
     pub template: Template,
+    /// Слова субтитров шортса (время — секунды исходника, с правками и ключевыми); пусто — субтитров нет.
+    pub subtitles: Vec<SubWord>,
     pub output: OutputSettings,
     pub encoder: Encoder,
     /// Итоговый файл; пока идёт рендер, пишется `.<имя>.part` рядом.
@@ -67,9 +70,18 @@ impl RenderJob {
         (self.end - self.start).max(0.0)
     }
 
+    /// Последовательности картинок субтитров по слоям шаблона: (номер слоя, последовательность).
+    /// Время — от начала шортса. Пока обложки и вставки нет, это просто сдвиг на `start`.
+    pub fn subtitle_sequences(&self) -> Vec<(usize, SubtitleSeq)> {
+        let canvas = self.template.canvas;
+        (self.template.layers.iter().enumerate())
+            .filter_map(|(i, l)| subtitles::sequence(l, &self.subtitles, self.start, self.end, canvas).map(|s| (i, s)))
+            .collect()
+    }
+
     /// Аргументы ffmpeg (без имени программы) и граф; его входы надо записать в `work_dir` ([`Self::run`]).
-    /// `art` — растры шаблона задачи (`Art::new(&self.template)`).
-    pub fn args(&self, art: &Art) -> Result<(Vec<String>, graph::Graph), RenderError> {
+    /// `art` — растры шаблона задачи (`Art::new(&self.template)`), `subs` — [`Self::subtitle_sequences`].
+    pub fn args(&self, art: &Art, subs: &[(usize, SubtitleSeq)]) -> Result<(Vec<String>, graph::Graph), RenderError> {
         self.template.validate()?;
         let codec_args = encoder_args(&self.encoder.name, self.output.video_bitrate_kbps)?;
         let codec = match self.encoder.name.as_str() {
@@ -85,7 +97,8 @@ impl RenderJob {
             fps: self.output.fps,
             vaapi,
         };
-        let g = graph::build(&self.template, art, &params);
+        let positions: Vec<(usize, i32, i32)> = subs.iter().map(|(i, s)| (*i, s.x, s.y)).collect();
+        let g = graph::build(&self.template, art, &positions, &params);
 
         let mut a: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y", "-progress", "pipe:1", "-nostats", "-stats_period", "0.25"]
             .map(String::from)
@@ -103,6 +116,7 @@ impl RenderJob {
                     a.extend(["-loop".into(), "1".into(), "-framerate".into(), format!("{fps:.4}")]);
                 }
                 Input::BackgroundVideo { .. } => a.extend(["-stream_loop".into(), "-1".into()]),
+                Input::Subtitles { .. } => a.extend(["-f".into(), "concat".into()]),
             }
             a.extend(["-i".into(), self.input_path(k + 1, input).display().to_string()]);
         }
@@ -130,6 +144,7 @@ impl RenderJob {
             Input::Mask(_) => self.work_dir.join(format!("in{n}.pgm")),
             Input::Sprite { .. } | Input::BackgroundImage { .. } => self.work_dir.join(format!("in{n}.pam")),
             Input::BackgroundVideo { path } => path.clone(),
+            Input::Subtitles { .. } => self.work_dir.join(format!("in{n}.ffconcat")),
         }
     }
 
@@ -137,7 +152,13 @@ impl RenderJob {
     /// недописанный файл удаляется. Итоговый файл появляется только после успешного завершения.
     pub fn run(&self, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<(), RenderError> {
         let art = Art::new(&self.template)?;
-        let (args, g) = self.args(&art)?;
+        let t0 = std::time::Instant::now();
+        let subs = self.subtitle_sequences();
+        if !subs.is_empty() {
+            let n: usize = subs.iter().map(|(_, s)| s.frames.len()).sum();
+            log::info!("субтитры: {n} картинок за {:.0} мс", t0.elapsed().as_secs_f64() * 1e3);
+        }
+        let (args, g) = self.args(&art, &subs)?;
         let io = |path: &Path| {
             let path = path.to_owned();
             move |source| RenderError::Io { path, source }
@@ -156,6 +177,15 @@ impl RenderJob {
                 }
                 Input::BackgroundImage { .. } => art.background.as_ref().expect("фон-картинка растрирована").to_pam(),
                 Input::BackgroundVideo { .. } => continue,
+                Input::Subtitles { layer } => {
+                    let seq = &subs.iter().find(|(i, _)| i == layer).expect("вход есть только у слоя с картинками").1;
+                    let name = |f: usize| format!("in{}-{f}.png", k + 1);
+                    for (f, bm) in seq.frames.iter().enumerate() {
+                        let path = self.work_dir.join(name(f));
+                        std::fs::write(&path, bm.to_png()).map_err(io(&path))?;
+                    }
+                    seq.ffconcat(name).into_bytes()
+                }
             };
             let path = self.input_path(k + 1, input);
             std::fs::write(&path, data).map_err(io(&path))?;
@@ -282,6 +312,7 @@ mod tests {
             start: 61.5,
             end: 91.5,
             template: Template::minimal(),
+            subtitles: vec![],
             output: OutputSettings::default(),
             encoder: Encoder { name: encoder.into(), vaapi_device: vaapi.then(|| "/dev/dri/renderD128".into()) },
             dest: "/out/short_1.mp4".into(),
@@ -290,7 +321,7 @@ mod tests {
     }
 
     fn joined(j: &RenderJob) -> String {
-        j.args(&Art::new(&j.template).unwrap()).unwrap().0.join(" ")
+        j.args(&Art::new(&j.template).unwrap(), &j.subtitle_sequences()).unwrap().0.join(" ")
     }
 
     #[test]
@@ -315,10 +346,10 @@ mod tests {
     #[test]
     fn unsupported_combinations() {
         let art = Art::new(&Template::minimal()).unwrap();
-        assert!(matches!(job("libsvtav1", false).args(&art), Err(RenderError::UnsupportedEncoder(_))));
+        assert!(matches!(job("libsvtav1", false).args(&art, &[]), Err(RenderError::UnsupportedEncoder(_))));
         let mut j = job("libx264", false);
         j.output.container = Container::Webm;
-        assert!(matches!(j.args(&art), Err(RenderError::UnsupportedContainer("webm"))));
+        assert!(matches!(j.args(&art, &[]), Err(RenderError::UnsupportedContainer("webm"))));
     }
 
     #[test]

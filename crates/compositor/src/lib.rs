@@ -162,6 +162,37 @@ impl Compositor {
         Ok(())
     }
 
+    /// Кадр видео из готовой картинки RGBA (строка 0 — верх) вместо mpv — обложка-картинка.
+    /// Потом — как после кадра mpv: мипмапы и размытый фон по `template`.
+    ///
+    /// # Safety
+    /// GL-контекст должен быть текущим.
+    pub unsafe fn upload_video(&mut self, gl: &glow::Context, w: u32, h: u32, rgba: &[u8], template: &Template) -> Result<(), String> {
+        if w == 0 || h == 0 || rgba.len() != (w * h * 4) as usize {
+            return Err(format!("картинка {w}×{h}: неверный размер данных"));
+        }
+        use glow::HasContext;
+        unsafe {
+            self.ensure_video(gl, w, h)?;
+            let Some(video) = &self.video else { return Ok(()) };
+            gl.bind_texture(glow::TEXTURE_2D, Some(video.tex));
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                0,
+                0,
+                w as i32,
+                h as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(rgba)),
+            );
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            self.video_rendered(gl, template)
+        }
+    }
+
     /// Готовит текстуру кадра видео-фона; `None` — фона-видео нет, текстура освобождается.
     ///
     /// # Safety

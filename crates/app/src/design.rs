@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CursorIcon, Key, Pos2, Sense, Stroke, Vec2};
 use sc_core::{
-    AccentMode, Align, Background, Batch, Border, Canvas, Color, Layer, Outline, Paint, Rect, SHORTS_UNSAFE_ZONES, Shadow,
+    AccentMode, Align, Background, Batch, Border, Canvas, Color, Cover, CoverSource, Layer, Outline, Paint, Rect, SHORTS_UNSAFE_ZONES, Shadow,
     ShortId, ShortStatus, SubtitleMode, Template, TemplateError, TemplateRef, VAlign, SUBTITLE_LINES,
     SUBTITLE_WORDS_PER_LINE, main_video_crop,
 };
@@ -58,8 +58,12 @@ pub struct DesignState {
     redo: Vec<Snapshot>,
     /// Править локальный шаблон выбранного шортса, а не шаблон пачки.
     pub local: bool,
-    /// Шортс, чей локальный шаблон правится сейчас (см. [`App::design_sync_target`]).
-    pub short: Option<ShortId>,
+    /// Править обложку выбранного шортса (если она есть).
+    pub cover: bool,
+    /// Что правится сейчас (см. [`App::design_sync_target`]).
+    pub target: Target,
+    /// Какой кадр обложки показан в превью (чтобы перематывать/подменять кадр только при смене).
+    pub(crate) cover_shown: Option<CoverSource>,
     /// Открытый диалог библиотеки шаблонов.
     pub(crate) dialog: Option<LibDialog>,
     /// Ключ и время последней правки — для склейки правок в один шаг отмены.
@@ -81,7 +85,9 @@ impl Default for DesignState {
             undo: Vec::new(),
             redo: Vec::new(),
             local: false,
-            short: None,
+            cover: false,
+            target: Target::Batch,
+            cover_shown: None,
             dialog: None,
             last_edit: None,
             guides: Guides::default(),
@@ -90,15 +96,41 @@ impl Default for DesignState {
     }
 }
 
-/// Состояние шаблона для отмены: шаблон пачки (с источником в библиотеке) или локальный шаблон шортса.
+/// Что правит «Оформление».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// Шаблон пачки.
+    Batch,
+    /// Локальный шаблон шортса.
+    Short(ShortId),
+    /// Шаблон обложки шортса.
+    Cover(ShortId),
+}
+
+impl Target {
+    pub fn short(self) -> Option<ShortId> {
+        match self {
+            Target::Batch => None,
+            Target::Short(id) | Target::Cover(id) => Some(id),
+        }
+    }
+}
+
+/// Состояние для отмены: шаблон пачки (с источником в библиотеке), локальный шаблон шортса или обложка шортса.
 pub(crate) enum Snapshot {
     Batch(Template, Option<TemplateRef>),
     Short(ShortId, Option<Template>),
+    Cover(ShortId, Option<Cover>),
 }
 
-/// Шаблон, который правится: локальный шортса `short` (если правок ещё нет — шаблон пачки) или шаблон пачки.
-fn edited(batch: &Batch, short: Option<ShortId>) -> &Template {
-    short.map_or(&batch.template, |id| batch.template_for(id))
+/// Шаблон, который правится: пачки, локальный шортса (если правок ещё нет — шаблон пачки) или обложки
+/// (если обложки нет — шаблон шортса).
+pub(crate) fn edited(batch: &Batch, target: Target) -> &Template {
+    match target {
+        Target::Batch => &batch.template,
+        Target::Short(id) => batch.template_for(id),
+        Target::Cover(id) => batch.short(id).and_then(|s| s.cover.as_ref()).map_or_else(|| batch.template_for(id), |c| &c.template),
+    }
 }
 
 struct Drag {
@@ -171,7 +203,7 @@ impl App {
     /// остаётся корректным; правки с одним `key` подряд склеиваются в один шаг отмены. Первая локальная правка
     /// шортса начинается с копии шаблона пачки.
     fn design_edit(&mut self, key: &str, f: impl FnOnce(&mut Template)) {
-        let target = self.design.short;
+        let target = self.design.target;
         let mut t = edited(&self.batch, target).clone();
         f(&mut t);
         if t == *edited(&self.batch, target) {
@@ -185,8 +217,13 @@ impl App {
         let now = Instant::now();
         let same = matches!(&self.design.last_edit, Some((k, at)) if k == key && now.duration_since(*at) < COALESCE);
         let next = match target {
-            Some(id) => Snapshot::Short(id, Some(t)),
-            None => Snapshot::Batch(t, self.batch.template_ref.clone()),
+            Target::Short(id) => Snapshot::Short(id, Some(t)),
+            Target::Cover(id) => {
+                let Some(mut c) = self.batch.short(id).and_then(|s| s.cover.clone()) else { return };
+                c.template = t;
+                Snapshot::Cover(id, Some(c))
+            }
+            Target::Batch => Snapshot::Batch(t, self.batch.template_ref.clone()),
         };
         self.design_apply(next, !same);
         self.design.last_edit = Some((key.to_owned(), now));
@@ -218,6 +255,10 @@ impl App {
                 let s = self.batch.short_mut(id)?;
                 Some(Snapshot::Short(id, std::mem::replace(&mut s.template, t)))
             }
+            Snapshot::Cover(id, c) => {
+                let s = self.batch.short_mut(id)?;
+                Some(Snapshot::Cover(id, std::mem::replace(&mut s.cover, c)))
+            }
         }
     }
 
@@ -233,38 +274,45 @@ impl App {
             d.last_edit = None;
             d.drag = None;
             d.error = None;
-            let n = edited(&self.batch, d.short).layers.len();
+            let n = edited(&self.batch, d.target).layers.len();
             d.layer = d.layer.filter(|&i| i < n);
             return;
         }
     }
 
-    /// Чей шаблон правит «Оформление»: выбранного шортса (если включены локальные правки) или пачки.
-    /// Вызывается в начале кадра.
+    /// Что правит «Оформление»: обложку выбранного шортса (если она есть и включена её правка), его локальный
+    /// шаблон (если включены локальные правки) или шаблон пачки. Вызывается в начале кадра.
     pub(crate) fn design_sync_target(&mut self) {
-        let short = self.cut.selected.filter(|&id| self.design.local && self.batch.short(id).is_some());
-        if short != self.design.short {
-            self.design.short = short;
+        let short = self.cut.selected.and_then(|id| self.batch.short(id));
+        let target = match short {
+            Some(s) if self.design.cover && s.cover.is_some() => Target::Cover(s.id),
+            Some(s) if self.design.local => Target::Short(s.id),
+            _ => Target::Batch,
+        };
+        if target != self.design.target {
+            self.design.target = target;
             self.design.last_edit = None;
             self.design.drag = None;
+            self.design.layer = None;
         }
+        self.cover_sync_preview();
     }
 
     /// Шаблон для превью: на «Оформлении» — тот, что правится, иначе — по выбранному шортсу.
     pub(crate) fn preview_template(&self, design: bool) -> &Template {
         match (design, self.cut.selected) {
-            (true, _) => edited(&self.batch, self.design.short),
+            (true, _) => edited(&self.batch, self.design.target),
             (false, Some(id)) => self.batch.template_for(id),
-            (false, None) => edited(&self.batch, self.design.short),
+            (false, None) => edited(&self.batch, self.design.target),
         }
     }
 
     fn design_layer(&self) -> Option<usize> {
-        self.design.layer.filter(|&i| i < edited(&self.batch, self.design.short).layers.len())
+        self.design.layer.filter(|&i| i < edited(&self.batch, self.design.target).layers.len())
     }
 
     fn add_layer(&mut self, kind: NewLayer, image: Option<PathBuf>) {
-        let at = self.design_layer().map_or(edited(&self.batch, self.design.short).layers.len(), |i| i + 1);
+        let at = self.design_layer().map_or(edited(&self.batch, self.design.target).layers.len(), |i| i + 1);
         let layer = match kind {
             NewLayer::Video => {
                 let h = 1080.0 * 9.0 / 16.0 / 1920.0;
@@ -347,7 +395,7 @@ impl App {
 
     fn duplicate_layer(&mut self) {
         let Some(i) = self.design_layer() else { return };
-        let mut copy = edited(&self.batch, self.design.short).layers[i].clone();
+        let mut copy = edited(&self.batch, self.design.target).layers[i].clone();
         // Копия чуть ниже и правее, если влезает, — чтобы было видно, что она есть.
         let shift = |r: &mut Rect| {
             if r.right() + 0.02 <= 1.0 && r.bottom() + 0.02 <= 1.0 {
@@ -367,7 +415,7 @@ impl App {
     fn move_layer(&mut self, up: bool) {
         let Some(i) = self.design_layer() else { return };
         let j = if up { i + 1 } else { i.wrapping_sub(1) };
-        if j >= edited(&self.batch, self.design.short).layers.len() {
+        if j >= edited(&self.batch, self.design.target).layers.len() {
             return;
         }
         self.design.last_edit = None;
@@ -457,7 +505,7 @@ impl App {
             ];
             (i.modifiers, keys.into_iter().filter(|k| i.key_pressed(*k)).collect::<Vec<_>>())
         });
-        let canvas = edited(&self.batch, self.design.short).canvas;
+        let canvas = edited(&self.batch, self.design.target).canvas;
         let step = if m.shift { 10.0 } else { 1.0 };
         for key in pressed {
             let nudge = match key {
@@ -586,16 +634,22 @@ impl App {
     }
 
     fn layers_ui(&mut self, ui: &mut egui::Ui) {
-        self.template_ui(ui);
+        // Пока правится обложка, выбор шаблона пачки/шортса спрятан — у обложки свой стиль.
+        if !matches!(self.design.target, Target::Cover(_)) {
+            self.template_ui(ui);
+            ui.add_space(6.0);
+            ui.separator();
+        }
+        self.cover_ui(ui);
         ui.add_space(6.0);
         ui.separator();
         ui.heading(self.i18n.tr("design-layers"));
         ui.add_space(4.0);
-        let n = edited(&self.batch, self.design.short).layers.len();
+        let n = edited(&self.batch, self.design.target).layers.len();
         let mut pick = self.design.layer;
         // Сверху списка — верхний слой.
         for i in (0..n).rev() {
-            let l = &edited(&self.batch, self.design.short).layers[i];
+            let l = &edited(&self.batch, self.design.target).layers[i];
             let kind = self.i18n.tr(layer_key(l));
             let mut text = match l {
                 Layer::Text { content, .. } => format!("{kind} · {}", excerpt(content, 18)),
@@ -662,19 +716,19 @@ impl App {
     }
 
     fn props_ui(&mut self, ui: &mut egui::Ui) {
-        let canvas = edited(&self.batch, self.design.short).canvas;
+        let canvas = edited(&self.batch, self.design.target).canvas;
         let mut pick = None;
         match self.design_layer() {
             None => {
                 ui.heading(self.i18n.tr("design-background"));
-                let mut bg = edited(&self.batch, self.design.short).background.clone();
+                let mut bg = edited(&self.batch, self.design.target).background.clone();
                 background_props(ui, &self.i18n, &mut bg, &mut pick);
-                if bg != edited(&self.batch, self.design.short).background {
+                if bg != edited(&self.batch, self.design.target).background {
                     self.design_edit("bg", |t| t.background = bg);
                 }
             }
             Some(i) => {
-                let orig = &edited(&self.batch, self.design.short).layers[i];
+                let orig = &edited(&self.batch, self.design.target).layers[i];
                 ui.heading(self.i18n.tr(layer_key(orig)));
                 if orig.in_unsafe_zone() {
                     ui.colored_label(Color32::from_rgb(255, 170, 60), self.i18n.tr("design-unsafe-warning"));
@@ -701,11 +755,11 @@ impl App {
     fn design_canvas(&mut self, ui: &mut egui::Ui) {
         let area = ui.available_rect_before_wrap();
         let empty = self.i18n.tr(if self.cut.source.is_none() { "design-preview-empty" } else { "cut-preview-loading" });
-        let screen = preview_canvas(ui, area, self.player.as_mut().unwrap(), edited(&self.batch, self.design.short), &empty);
-        let src = self.player.as_ref().map_or((0, 0), |p| p.state.size);
+        let screen = preview_canvas(ui, area, self.player.as_mut().unwrap(), edited(&self.batch, self.design.target), &empty);
+        let src = self.player.as_ref().map_or((0, 0), |p| p.frame_size());
         let has_src = src.0 > 0 && src.1 > 0;
 
-        let canvas = edited(&self.batch, self.design.short).canvas;
+        let canvas = edited(&self.batch, self.design.target).canvas;
         let (sw, sh) = (screen.width(), screen.height());
         let to_frac = |p: Pos2| ((p.x - screen.min.x) / sw, (p.y - screen.min.y) / sh);
         let to_screen = |r: Rect| egui::Rect::from_min_size(screen.min + Vec2::new(r.x * sw, r.y * sh), Vec2::new(r.w * sw, r.h * sh));
@@ -728,7 +782,7 @@ impl App {
         if let Some(p) = resp.hover_pos()
             && self.design.drag.is_none()
         {
-            let t = edited(&self.batch, self.design.short);
+            let t = edited(&self.batch, self.design.target);
             let h = sel.and_then(|i| handle_at(t.layers[i].rect(), p));
             let icon = match h {
                 Some(Handle::N | Handle::S) => CursorIcon::ResizeVertical,
@@ -747,7 +801,7 @@ impl App {
         if resp.drag_started()
             && let Some(p) = ui.input(|i| i.pointer.press_origin())
         {
-            let t = edited(&self.batch, self.design.short);
+            let t = edited(&self.batch, self.design.target);
             let from = to_frac(p);
             let grabbed = sel.and_then(|i| handle_at(t.layers[i].rect(), p).map(|h| (i, h)));
             let grabbed = grabbed.or_else(|| editor::hit(&t.layers, from, sel).map(|i| (i, Handle::Move)));
@@ -779,7 +833,7 @@ impl App {
                     }
                 });
             } else {
-                let targets = Targets::new(&edited(&self.batch, self.design.short).layers, i);
+                let targets = Targets::new(&edited(&self.batch, self.design.target).layers, i);
                 let opts = SnapOpts {
                     // Ctrl — временно без привязок.
                     threshold: (self.design.snap && !m.command).then_some((SNAP_PX / sw, SNAP_PX / sh)),
@@ -801,7 +855,7 @@ impl App {
         if resp.clicked()
             && let Some(p) = resp.interact_pointer_pos()
         {
-            let t = edited(&self.batch, self.design.short);
+            let t = edited(&self.batch, self.design.target);
             if sel.and_then(|i| handle_at(t.layers[i].rect(), p)).is_none() {
                 self.design.layer = editor::hit(&t.layers, to_frac(p), None);
             }
@@ -810,8 +864,8 @@ impl App {
         if crop_mode
             && has_src
             && let Some(p) = resp.hover_pos()
-            && let Some(i) = editor::hit(&edited(&self.batch, self.design.short).layers, to_frac(p), sel)
-            && let Layer::MainVideo { crop, dest, .. } = &edited(&self.batch, self.design.short).layers[i]
+            && let Some(i) = editor::hit(&edited(&self.batch, self.design.target).layers, to_frac(p), sel)
+            && let Layer::MainVideo { crop, dest, .. } = &edited(&self.batch, self.design.target).layers[i]
         {
             let scroll = ui.input(|inp| inp.smooth_scroll_delta.y);
             if scroll != 0.0 {
@@ -831,7 +885,7 @@ impl App {
         }
 
         // Оверлеи редактора поверх холста.
-        let t = edited(&self.batch, self.design.short);
+        let t = edited(&self.batch, self.design.target);
         let sel = self.design_layer();
         let painter = ui.painter().with_clip_rect(area);
         let canvas_painter = ui.painter().with_clip_rect(screen);

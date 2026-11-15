@@ -45,6 +45,18 @@ pub enum Input {
     SourceTail,
     /// Клип вставки (`-t` длительность вставки).
     Insert { path: PathBuf },
+    /// Готовый кадр обложки (PNG размером с холст) на длину обложки.
+    Cover,
+}
+
+/// Обложка в графе: готовый кадр (размером с холст) в начале шортса.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CoverGraph {
+    /// Длительность, с.
+    pub duration: f64,
+    /// «Звук сразу»: кадр закрывает первые кадры шортса, ничего не сдвигается; иначе — перед шортсом
+    /// (`concat`), на нём тишина.
+    pub over: bool,
 }
 
 /// Вставка в графе: основное видео замирает на последнем кадре перед ней, вставка идёт поверх по плану,
@@ -68,7 +80,7 @@ pub struct Graph {
     /// Текст для `-filter_complex`; выход — метка `[out]`.
     pub filter: String,
     pub inputs: Vec<Input>,
-    /// Звук собран графом (метка `[aout]`) — при вставке; иначе звук берётся из исходника как есть.
+    /// Звук собран графом (метка `[aout]`) — при вставке или обложке с тишиной; иначе звук берётся из исходника как есть.
     pub audio_out: bool,
 }
 
@@ -90,12 +102,13 @@ pub struct GraphParams {
 
 /// Строит граф. Шаблон должен быть проверен (`Template::validate`), `art` — растры этого шаблона,
 /// `subtitles` — слои субтитров, которым есть что показать: (номер слоя, левый верхний угол картинок);
-/// `insert` — рекламная вставка шортса.
+/// `insert` — рекламная вставка шортса, `cover` — обложка (время субтитров и вставки — от начала шортса без неё).
 pub fn build(
     template: &Template,
     art: &Art,
     subtitles: &[(usize, i32, i32)],
     insert: Option<&InsertGraph>,
+    cover: Option<&CoverGraph>,
     p: &GraphParams,
 ) -> Graph {
     let canvas = template.canvas;
@@ -122,7 +135,8 @@ pub fn build(
         head += &format!("fps={},", num(fps as f32));
     }
     let branches = videos.len() + usize::from(blur);
-    head += &format!("format=yuv420p,split={branches}");
+    // Без видео и размытия (кадр не нужен) — исходник в никуда.
+    head += &if branches == 0 { "nullsink".to_owned() } else { format!("format=yuv420p,split={branches}") };
     if blur {
         head += "[bg]";
     }
@@ -271,6 +285,19 @@ pub fn build(
         overlay(&mut chains, &mut base, top, x, y, ins_extra);
     }
 
+    // Обложка — после всех слоёв (они живут во времени шортса без обложки).
+    if let Some(c) = cover {
+        let n = add_input(&mut inputs, Input::Cover);
+        chains.push(format!("[{n}:v]fps={out_fps},format=yuv420p,setsar=1[cover]"));
+        let next = "basec".to_owned();
+        if c.over {
+            chains.push(format!("[{base}][cover]overlay=0:0:eof_action=pass[{next}]"));
+        } else {
+            chains.push(format!("[{base}]setsar=1[basem];[cover][basem]concat=n=2:v=1:a=0[{next}]"));
+        }
+        base = next;
+    }
+
     // Хвост: выходное разрешение и формат для кодировщика.
     let mut tail = format!("[{base}]");
     if let Some(r) = p.resolution.filter(|r| *r != canvas) {
@@ -298,6 +325,23 @@ pub fn build(
         chains.push(piece(ins_n.filter(|_| ins.has_audio), ins.duration, "a1"));
         chains.push(piece(tail.filter(|_| p.audio), ins.rest, "a2"));
         chains.push("[a0][a1][a2]concat=n=3:v=0:a=1[aout]".into());
+        audio_out = true;
+    }
+    // Обложка перед шортсом: на ней тишина.
+    if let Some(c) = cover.filter(|c| !c.over)
+        && (audio_out || p.audio)
+    {
+        const AF: &str = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo";
+        let main = if audio_out {
+            let last = chains.last_mut().expect("звук вставки собран");
+            *last = last.replace("[aout]", "[amain]");
+            "[amain]".to_owned()
+        } else {
+            chains.push(format!("[0:a]{AF}[amain]"));
+            "[amain]".to_owned()
+        };
+        chains.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={d}[acover]", d = secs(c.duration)));
+        chains.push(format!("[acover]{main}concat=n=2:v=0:a=1[aout]"));
         audio_out = true;
     }
 
@@ -348,7 +392,7 @@ mod tests {
     }
 
     fn graph(t: &Template, p: &GraphParams) -> Graph {
-        build(t, &Art::new(t).unwrap(), &[], None, p)
+        build(t, &Art::new(t).unwrap(), &[], None, None, p)
     }
 
     #[test]
@@ -464,7 +508,7 @@ mod tests {
         let mut t = Template::minimal();
         t.layers.push(Layer::BannerSlot { rect: Rect::new(0.0, 0.9, 1.0, 0.1) });
         t.layers.insert(1, Layer::BannerSlot { rect: Rect::new(0.0, 0.0, 1.0, 0.1) });
-        let g = build(&t, &Art::new(&t).unwrap(), &[(1, 40, 1200)], None, &params((1920, 1080)));
+        let g = build(&t, &Art::new(&t).unwrap(), &[(1, 40, 1200)], None, None, &params((1920, 1080)));
         assert_eq!(g.inputs, vec![Input::Subtitles { layer: 1 }]);
         assert!(g.filter.contains("[base1][1:v]overlay=40:1200[base2]"), "{}", g.filter);
         assert!(g.filter.ends_with("[base2]setsar=1,format=yuv420p[out]"), "{}", g.filter);
@@ -508,7 +552,7 @@ mod tests {
         *corner_radius = 0.03;
         t.layers.push(Layer::BannerSlot { rect: Rect::new(0.1, 0.8, 0.8, 0.1) });
         let ins = insert(&t, sc_core::InsertMode::Slot, &[], false, true);
-        let g = build(&t, &Art::new(&t).unwrap(), &[], Some(&ins), &params((1920, 1080)));
+        let g = build(&t, &Art::new(&t).unwrap(), &[], Some(&ins), None, &params((1920, 1080)));
         let f = &g.filter;
         assert_eq!(
             g.inputs,
@@ -539,7 +583,7 @@ mod tests {
         assert_eq!(banner, vec![1]);
         let mut ins = insert(&t, sc_core::InsertMode::Fullscreen, &banner, false, false);
         ins.size = (720, 1280);
-        let g = build(&t, &Art::new(&t).unwrap(), &[(2, 0, 1500)], Some(&ins), &params((1920, 1080)));
+        let g = build(&t, &Art::new(&t).unwrap(), &[(2, 0, 1500)], Some(&ins), None, &params((1920, 1080)));
         let f = &g.filter;
         // вставка — перед баннером (слой 1); субтитры (на слое 2, выше вставки) — прячутся
         let pos_ins = f.find("[ins]overlay=0:0:eof_action=pass").expect(f);

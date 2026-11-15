@@ -87,9 +87,9 @@ impl App {
         self.insert_asset().and_then(|a| a.meta.duration).unwrap_or(0.0)
     }
 
-    /// Итоговая длина шортса со вставкой.
+    /// Итоговая длина шортса со вставкой и обложкой.
     pub(crate) fn final_duration(&self, s: &Short) -> f64 {
-        s.duration() + if self.insert_info(s.id).is_some() { self.insert_duration() } else { 0.0 }
+        s.duration() + if self.insert_info(s.id).is_some() { self.insert_duration() } else { 0.0 } + self.cover_extra(s.id)
     }
 
     /// Поставить вставку пачки (`None` — без вставки). Режим сбрасывается на «авто».

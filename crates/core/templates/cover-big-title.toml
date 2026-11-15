@@ -1,0 +1,18 @@
+# Обложка «Крупный заголовок»: затемнение по центру и заголовок шортса во всю ширину, акцент — плашкой.
+[[layers]]
+type = "shape"
+rect = { x = 0.0, y = 0.3, w = 1.0, h = 0.4 }
+paint = { type = "solid", color = "#000000a8" }
+
+[[layers]]
+type = "text"
+rect = { x = 0.06, y = 0.33, w = 0.8, h = 0.34 }
+content = "{title}"
+font = "Montserrat Black"
+size = 0.09
+color = "#ffffff"
+accent_color = "#e5483f"
+accent_mode = "plate"
+align = "center"
+valign = "center"
+outline = { width = 0.004, color = "#000000" }

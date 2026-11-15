@@ -40,6 +40,8 @@ pub struct Settings {
     /// Папка, из которой в прошлый раз добавляли видео.
     pub last_import_dir: Option<PathBuf>,
     pub analysis: AnalysisSettings,
+    /// Длительность новой обложки, кадров (SPEC §5).
+    pub cover_frames: u32,
 }
 
 /// Распознавание речи и нарезка.
@@ -69,6 +71,7 @@ impl Default for Settings {
             output: OutputSettings { conflict_policy: ConflictPolicy::Continue, ..Default::default() },
             last_import_dir: None,
             analysis: AnalysisSettings::default(),
+            cover_frames: crate::cover::COVER_FRAMES_DEFAULT,
         }
     }
 }

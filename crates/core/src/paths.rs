@@ -43,6 +43,11 @@ impl Paths {
     pub fn templates_dir(&self) -> PathBuf {
         self.data.join("templates")
     }
+
+    /// Свои стили обложек (шаблоны обложек), по файлу на стиль.
+    pub fn cover_styles_dir(&self) -> PathBuf {
+        self.data.join("cover-styles")
+    }
     pub fn library_dir(&self) -> PathBuf {
         self.data.join("library")
     }

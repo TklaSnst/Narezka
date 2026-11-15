@@ -1,0 +1,14 @@
+# Обложка «Заголовок сверху»: жёлтый заголовок с обводкой над видео, ниже зоны поиска Shorts.
+[[layers]]
+type = "text"
+rect = { x = 0.06, y = 0.13, w = 0.8, h = 0.2 }
+content = "{title}"
+font = "Montserrat Black"
+size = 0.08
+color = "#ffd60a"
+accent_color = "#ffffff"
+accent_mode = "color"
+align = "center"
+valign = "center"
+outline = { width = 0.006, color = "#000000" }
+shadow = { color = "#000000c0", blur = 0.01, dy = 0.004 }

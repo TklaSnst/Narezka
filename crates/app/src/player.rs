@@ -164,6 +164,8 @@ pub struct Player {
     ins_active: bool,
     /// Время основного плеера в прошлом кадре — чтобы заметить, что воспроизведение пересекло место вставки.
     last_time: f64,
+    /// Картинка вместо кадра видео (обложка-картинка): путь, картинка, загружена ли в композитор.
+    still: Option<(PathBuf, image::RgbaImage, bool)>,
 }
 
 /// Опции mpv для обоих экземпляров.
@@ -235,6 +237,7 @@ impl Player {
             ins: None,
             ins_active: false,
             last_time: 0.0,
+            still: None,
         })
     }
 
@@ -256,6 +259,34 @@ impl Player {
             self.mpv.command(&["stop"]);
             self.state = State { paused: true, ..Default::default() };
         }
+    }
+
+    /// Показывать картинку вместо кадра видео (`None` — снова видео). Картинка не открылась — остаётся видео.
+    pub fn set_still(&mut self, path: Option<&Path>) {
+        if self.still.as_ref().map(|s| s.0.as_path()) == path {
+            return;
+        }
+        let had = self.still.take().is_some();
+        if let Some(path) = path {
+            match image::open(path) {
+                Ok(img) => {
+                    self.set_paused(true);
+                    self.still = Some((path.to_owned(), img.to_rgba8(), false));
+                }
+                Err(e) => log::error!("картинка обложки {path:?}: {e}"),
+            }
+        }
+        if had && self.still.is_none() {
+            // Кадр видео в текстуре затёрт картинкой — mpv рисует его заново.
+            let t = self.state.time;
+            self.seek(t, true);
+        }
+        self.dirty = true;
+    }
+
+    /// Размер кадра, который сейчас в превью (картинки обложки или видео).
+    pub fn frame_size(&self) -> (u32, u32) {
+        self.still.as_ref().map_or(self.state.size, |s| s.1.dimensions())
     }
 
     pub fn is_ready(&self) -> bool {
@@ -695,10 +726,22 @@ impl Player {
 
         let gl = self.gl.clone();
         let (w, h) = self.state.size;
-        if let Err(e) = unsafe { self.comp.ensure_video(&gl, w, h) } {
+        if let Some((_, img, uploaded)) = &mut self.still {
+            if !*uploaded {
+                *uploaded = true;
+                let (iw, ih) = img.dimensions();
+                if let Err(e) = unsafe { self.comp.upload_video(&gl, iw, ih, img.as_raw(), template) } {
+                    log::error!("картинка обложки: {e}");
+                }
+                self.dirty = true;
+            }
+            // mpv не рисует, но кадры у него надо забирать.
+            let _ = self.mpv.wants_frame();
+        } else if let Err(e) = unsafe { self.comp.ensure_video(&gl, w, h) } {
             log::error!("текстура кадра {w}×{h}: {e}");
         }
-        if let Some((fbo, fw, fh)) = self.comp.video_target()
+        if self.still.is_none()
+            && let Some((fbo, fw, fh)) = self.comp.video_target()
             && self.mpv.wants_frame()
         {
             self.mpv.render(fbo, fw, fh);

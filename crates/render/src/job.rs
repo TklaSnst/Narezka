@@ -6,11 +6,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use sc_core::{Codec, Container, InsertPlan, OutputSettings, SubWord, Template};
+use sc_core::{Codec, Container, InsertPlan, OutputSettings, SubWord, Template, cover_duration};
 
 use sc_raster::Art;
 
-use crate::graph::{self, GraphParams, Input, InsertGraph};
+use crate::graph::{self, CoverGraph, GraphParams, Input, InsertGraph};
 use crate::naming::part_path;
 use crate::subtitles::{self, SubtitleSeq};
 
@@ -37,6 +37,27 @@ pub struct InsertJob {
     pub plan: InsertPlan,
 }
 
+/// Откуда кадр обложки.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CoverFrame {
+    /// Кадр исходника задачи в момент `t`, секунды исходника.
+    Source { t: f64 },
+    /// Картинка вместо кадра видео; `size` — её размер.
+    Image { path: PathBuf, size: (u32, u32) },
+}
+
+/// Обложка шортса: кадр по своему шаблону стоит в начале (SPEC §5).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverJob {
+    pub frame: CoverFrame,
+    /// Шаблон обложки (с баннером и подстановками).
+    pub template: Template,
+    /// Длительность, кадров вывода.
+    pub frames: u32,
+    /// «Звук сразу»: обложка поверх первых кадров, без сдвига и тишины.
+    pub sound_now: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderJob {
     pub input: PathBuf,
@@ -53,6 +74,8 @@ pub struct RenderJob {
     pub subtitles: Vec<SubWord>,
     /// Рекламная вставка: основное видео стоит, пока она идёт.
     pub insert: Option<InsertJob>,
+    /// Обложка-кадр в начале.
+    pub cover: Option<CoverJob>,
     pub output: OutputSettings,
     pub encoder: Encoder,
     /// Итоговый файл; пока идёт рендер, пишется `.<имя>.part` рядом.
@@ -82,9 +105,69 @@ pub enum RenderError {
 }
 
 impl RenderJob {
-    /// Длительность итогового шортса (со вставкой).
+    /// Длительность итогового шортса (со вставкой и обложкой).
     pub fn duration(&self) -> f64 {
-        (self.end - self.start).max(0.0) + self.insert.as_ref().map_or(0.0, |i| i.duration)
+        (self.end - self.start).max(0.0) + self.insert.as_ref().map_or(0.0, |i| i.duration) + self.cover_shift()
+    }
+
+    /// Частота кадров вывода.
+    fn out_fps(&self) -> f64 {
+        self.output.fps.unwrap_or(self.src_fps)
+    }
+
+    /// Длительность обложки, с.
+    fn cover_duration(&self) -> f64 {
+        self.cover.as_ref().map_or(0.0, |c| cover_duration(c.frames, self.out_fps()))
+    }
+
+    /// Насколько обложка сдвигает шортс (0 — «звук сразу» или обложки нет).
+    fn cover_shift(&self) -> f64 {
+        if self.cover.as_ref().is_some_and(|c| !c.sound_now) { self.cover_duration() } else { 0.0 }
+    }
+
+    /// Файл готового кадра обложки.
+    fn cover_png(&self) -> PathBuf {
+        self.work_dir.join("cover.png")
+    }
+
+    fn params(&self, src: (u32, u32)) -> GraphParams {
+        GraphParams {
+            src,
+            src_fps: self.src_fps,
+            resolution: self.output.resolution,
+            fps: self.output.fps,
+            vaapi: self.encoder.vaapi_device.is_some(),
+            audio: self.has_audio,
+        }
+    }
+
+    /// Аргументы ffmpeg для кадра обложки (PNG размером с холст в [`Self::cover_png`]) и граф;
+    /// `art` — растры шаблона обложки. `None` — обложки нет.
+    pub fn cover_args(&self, art: &Art) -> Result<Option<(Vec<String>, graph::Graph)>, RenderError> {
+        let Some(c) = &self.cover else { return Ok(None) };
+        c.template.validate()?;
+        let mut a: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y"].map(String::from).into();
+        let src = match &c.frame {
+            CoverFrame::Source { t } => {
+                a.extend(["-ss".into(), secs(*t), "-i".into(), self.input.display().to_string()]);
+                self.src_size
+            }
+            CoverFrame::Image { path, size } => {
+                a.extend(["-loop".into(), "1".into(), "-i".into(), path.display().to_string()]);
+                *size
+            }
+        };
+        // Кадр — в размер холста шаблона шортса (масштаб к выводу — в основном проходе), без VAAPI.
+        let params = GraphParams { resolution: None, fps: None, vaapi: false, audio: false, ..self.params(src) };
+        let g = graph::build(&c.template, art, &[], None, None, &params);
+        for (k, input) in g.inputs.iter().enumerate() {
+            cover_input_opts(&mut a, input);
+            a.extend(["-i".into(), self.input_path_in(&self.work_dir.join("cover"), k + 1, input).display().to_string()]);
+        }
+        a.extend(["-filter_complex".into(), g.filter.clone(), "-map".into(), "[out]".into()]);
+        a.extend(["-frames:v", "1", "-update", "1", "-f", "image2"].map(String::from));
+        a.push(self.cover_png().display().to_string());
+        Ok(Some((a, g)))
     }
 
     /// Последовательности картинок субтитров по слоям шаблона: (номер слоя, последовательность).
@@ -128,18 +211,11 @@ impl RenderJob {
             _ => Codec::Hevc,
         };
         let muxer = muxer(self.output.container, codec)?;
-        let vaapi = self.encoder.vaapi_device.is_some();
-        let params = GraphParams {
-            src: self.src_size,
-            src_fps: self.src_fps,
-            resolution: self.output.resolution,
-            fps: self.output.fps,
-            vaapi,
-            audio: self.has_audio,
-        };
+        let params = self.params(self.src_size);
         let positions: Vec<(usize, i32, i32)> = subs.iter().map(|(i, s)| (*i, s.x, s.y)).collect();
         let insert = self.insert_graph();
-        let g = graph::build(&self.template, art, &positions, insert.as_ref(), &params);
+        let cover = self.cover.as_ref().map(|c| CoverGraph { duration: self.cover_duration(), over: c.sound_now });
+        let g = graph::build(&self.template, art, &positions, insert.as_ref(), cover.as_ref(), &params);
 
         let mut a: Vec<String> = ["-nostdin", "-hide_banner", "-v", "error", "-y", "-progress", "pipe:1", "-nostats", "-stats_period", "0.25"]
             .map(String::from)
@@ -173,6 +249,11 @@ impl RenderJob {
                     let d = self.insert.as_ref().map_or(0.0, |i| i.duration);
                     a.extend(["-t".into(), secs(d)]);
                 }
+                Input::Cover => {
+                    let fps = self.out_fps();
+                    a.extend(["-loop".into(), "1".into(), "-framerate".into(), format!("{fps:.4}")]);
+                    a.extend(["-t".into(), secs(self.cover_duration())]);
+                }
             }
             a.extend(["-i".into(), self.input_path(k + 1, input).display().to_string()]);
         }
@@ -196,13 +277,56 @@ impl RenderJob {
 
     /// Файл входа `n` графа: сгенерированные — в `work_dir`, видео-фон — как есть.
     fn input_path(&self, n: usize, input: &Input) -> PathBuf {
+        self.input_path_in(&self.work_dir, n, input)
+    }
+
+    /// Файл входа `n` графа; сгенерированные — в каталоге `dir`.
+    fn input_path_in(&self, dir: &Path, n: usize, input: &Input) -> PathBuf {
         match input {
-            Input::Mask(_) => self.work_dir.join(format!("in{n}.pgm")),
-            Input::Sprite { .. } | Input::BackgroundImage { .. } => self.work_dir.join(format!("in{n}.pam")),
+            Input::Mask(_) => dir.join(format!("in{n}.pgm")),
+            Input::Sprite { .. } | Input::BackgroundImage { .. } => dir.join(format!("in{n}.pam")),
             Input::BackgroundVideo { path } | Input::Clip { path, .. } | Input::Insert { path } => path.clone(),
             Input::SourceTail => self.input.clone(),
-            Input::Subtitles { .. } => self.work_dir.join(format!("in{n}.ffconcat")),
+            Input::Subtitles { .. } => dir.join(format!("in{n}.ffconcat")),
+            Input::Cover => self.cover_png(),
         }
+    }
+
+    /// Пишет сгенерированные входы графа `g` (маски, растры, субтитры) в каталог `dir`.
+    fn write_inputs(&self, dir: &Path, g: &graph::Graph, art: &Art, subs: &[(usize, SubtitleSeq)]) -> Result<(), RenderError> {
+        let io = |path: &Path| {
+            let path = path.to_owned();
+            move |source| RenderError::Io { path, source }
+        };
+        std::fs::create_dir_all(dir).map_err(io(dir))?;
+        for (k, input) in g.inputs.iter().enumerate() {
+            let data = match input {
+                Input::Mask(m) => graph::mask_pgm(m.width, m.height, m.radius),
+                Input::Sprite { layer, above } => {
+                    let la = &art.layers[*layer];
+                    let s = if *above { &la.above } else { &la.below };
+                    s.as_ref().expect("вход графа есть только у существующего растра").bitmap.to_pam()
+                }
+                Input::BackgroundImage { .. } => art.background.as_ref().expect("фон-картинка растрирована").to_pam(),
+                Input::BackgroundVideo { .. }
+                | Input::Clip { .. }
+                | Input::Insert { .. }
+                | Input::SourceTail
+                | Input::Cover => continue,
+                Input::Subtitles { layer } => {
+                    let seq = &subs.iter().find(|(i, _)| i == layer).expect("вход есть только у слоя с картинками").1;
+                    let name = |f: usize| format!("in{}-{f}.png", k + 1);
+                    for (f, bm) in seq.frames.iter().enumerate() {
+                        let path = dir.join(name(f));
+                        std::fs::write(&path, bm.to_png()).map_err(io(&path))?;
+                    }
+                    seq.ffconcat(name).into_bytes()
+                }
+            };
+            let path = self.input_path_in(dir, k + 1, input);
+            std::fs::write(&path, data).map_err(io(&path))?;
+        }
+        Ok(())
     }
 
     /// Рендерит; `progress` получает долю 0..1. Отмена — `cancel` в `true`: процесс завершается,
@@ -220,32 +344,16 @@ impl RenderJob {
             let path = path.to_owned();
             move |source| RenderError::Io { path, source }
         };
-        std::fs::create_dir_all(&self.work_dir).map_err(io(&self.work_dir))?;
         if let Some(dir) = self.dest.parent() {
             std::fs::create_dir_all(dir).map_err(io(dir))?;
         }
-        for (k, input) in g.inputs.iter().enumerate() {
-            let data = match input {
-                Input::Mask(m) => graph::mask_pgm(m.width, m.height, m.radius),
-                Input::Sprite { layer, above } => {
-                    let la = &art.layers[*layer];
-                    let s = if *above { &la.above } else { &la.below };
-                    s.as_ref().expect("вход графа есть только у существующего растра").bitmap.to_pam()
-                }
-                Input::BackgroundImage { .. } => art.background.as_ref().expect("фон-картинка растрирована").to_pam(),
-                Input::BackgroundVideo { .. } | Input::Clip { .. } | Input::Insert { .. } | Input::SourceTail => continue,
-                Input::Subtitles { layer } => {
-                    let seq = &subs.iter().find(|(i, _)| i == layer).expect("вход есть только у слоя с картинками").1;
-                    let name = |f: usize| format!("in{}-{f}.png", k + 1);
-                    for (f, bm) in seq.frames.iter().enumerate() {
-                        let path = self.work_dir.join(name(f));
-                        std::fs::write(&path, bm.to_png()).map_err(io(&path))?;
-                    }
-                    seq.ffconcat(name).into_bytes()
-                }
-            };
-            let path = self.input_path(k + 1, input);
-            std::fs::write(&path, data).map_err(io(&path))?;
+        self.write_inputs(&self.work_dir, &g, &art, &subs)?;
+        if let Some(c) = &self.cover {
+            let result = self.render_cover(c, cancel);
+            if result.is_err() {
+                let _ = std::fs::remove_dir_all(&self.work_dir);
+            }
+            result?;
         }
         log::info!("ffmpeg {}", args.join(" "));
 
@@ -260,6 +368,23 @@ impl RenderJob {
             progress(1.0);
         }
         result
+    }
+
+    /// Предварительный проход: кадр обложки по её шаблону → `cover.png`.
+    fn render_cover(&self, c: &CoverJob, cancel: &AtomicBool) -> Result<(), RenderError> {
+        let art = Art::new(&c.template)?;
+        let (args, g) = self.cover_args(&art)?.expect("обложка есть");
+        self.write_inputs(&self.work_dir.join("cover"), &g, &art, &[])?;
+        log::info!("ffmpeg (обложка) {}", args.join(" "));
+        if cancel.load(Ordering::Relaxed) {
+            return Err(RenderError::Cancelled);
+        }
+        let out = Command::new("ffmpeg").args(&args).stdin(Stdio::null()).output().map_err(RenderError::Spawn)?;
+        if !out.status.success() || !self.cover_png().exists() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+            return Err(RenderError::Failed(format!("обложка: {err}")));
+        }
+        Ok(())
     }
 
     fn spawn_and_wait(&self, args: &[String], cancel: &AtomicBool, progress: &mut impl FnMut(f32)) -> Result<(), RenderError> {
@@ -318,6 +443,21 @@ fn parse_out_time(line: &str) -> Option<f64> {
     (us >= 0).then_some(us as f64 / 1e6)
 }
 
+/// Ключи перед `-i` для входа графа обложки (там нет хвоста исходника, вставки и самой обложки).
+fn cover_input_opts(a: &mut Vec<String>, input: &Input) {
+    match input {
+        Input::BackgroundImage { fps } => a.extend(["-loop".into(), "1".into(), "-framerate".into(), format!("{fps:.4}")]),
+        Input::BackgroundVideo { .. } => a.extend(["-stream_loop".into(), "-1".into()]),
+        Input::Clip { decoder, .. } => {
+            a.extend(["-stream_loop".into(), "-1".into()]);
+            if let Some(d) = decoder {
+                a.extend(["-c:v".into(), d.clone()]);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn secs(v: f64) -> String {
     format!("{v:.3}")
 }
@@ -371,6 +511,7 @@ mod tests {
             template: Template::minimal(),
             subtitles: vec![],
             insert: None,
+            cover: None,
             output: OutputSettings::default(),
             encoder: Encoder { name: encoder.into(), vaapi_device: vaapi.then(|| "/dev/dri/renderD128".into()) },
             dest: "/out/short_1.mp4".into(),

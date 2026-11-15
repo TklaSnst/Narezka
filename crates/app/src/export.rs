@@ -73,6 +73,7 @@ impl App {
                 let (template, banner_layers) = batch.template_for(id).with_banner_layers(self.banner_art(Some(id)).as_ref());
                 let template = template.with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() });
                 let insert = self.insert_info(id).map(|i| i.job(&template, &banner_layers));
+                let cover = self.cover_job(id);
                 Some(RenderJob {
                     input: source.path.clone(),
                     src_size: (info.width, info.height),
@@ -82,6 +83,7 @@ impl App {
                     end: short.end,
                     template,
                     insert,
+                    cover,
                     subtitles: self
                         .transcript_of(short.source_id)
                         .map(|t| crate::subtitles::short_words(&t, short))

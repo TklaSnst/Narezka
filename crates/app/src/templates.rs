@@ -6,12 +6,12 @@ use sc_core::library::{self, LibraryError, TemplateRef, UserTemplate, UserTempla
 use sc_core::{Template, TextVars};
 
 use crate::App;
-use crate::design::Snapshot;
+use crate::design::{Snapshot, Target};
 
 /// Свои шаблоны: каталог и прочитанный из него список (перечитывается после каждой операции).
 pub struct Library {
-    store: UserTemplates,
-    list: Vec<UserTemplate>,
+    pub(crate) store: UserTemplates,
+    pub(crate) list: Vec<UserTemplate>,
 }
 
 impl Library {
@@ -20,11 +20,11 @@ impl Library {
         Self { store, list }
     }
 
-    fn refresh(&mut self) {
+    pub(crate) fn refresh(&mut self) {
         self.list = self.store.list();
     }
 
-    fn user(&self, id: &str) -> Option<&UserTemplate> {
+    pub(crate) fn user(&self, id: &str) -> Option<&UserTemplate> {
         self.list.iter().find(|u| u.id == id)
     }
 
@@ -37,7 +37,7 @@ impl Library {
     }
 
     /// Свободное имя вида «база», «база 2», «база 3»…
-    fn free_name(&self, base: &str) -> String {
+    pub(crate) fn free_name(&self, base: &str) -> String {
         let taken = |n: &str| self.list.iter().any(|u| u.template.name.trim().eq_ignore_ascii_case(n.trim()));
         (1..).map(|i| if i == 1 { base.to_owned() } else { format!("{base} {i}") }).find(|n| !taken(n)).unwrap()
     }
@@ -72,7 +72,7 @@ impl App {
         }
     }
 
-    fn lib_error(&self, e: &LibraryError) -> String {
+    pub(crate) fn lib_error(&self, e: &LibraryError) -> String {
         match e {
             LibraryError::EmptyName => self.i18n.tr("tpl-err-empty"),
             LibraryError::NameTaken(n) => self.i18n.tr_args("tpl-err-taken", &[("name", n.clone().into())]),
@@ -84,9 +84,11 @@ impl App {
     /// Выбор шаблона из библиотеки — для пачки или, при локальных правках, для выбранного шортса. Отменяется.
     fn pick_template(&mut self, r: TemplateRef) {
         let Some(t) = self.templates.source(&r) else { return };
-        let next = match self.design.short {
-            Some(id) => Snapshot::Short(id, Some(t)),
-            None => Snapshot::Batch(t, Some(r)),
+        let next = match self.design.target {
+            Target::Short(id) => Snapshot::Short(id, Some(t)),
+            Target::Batch => Snapshot::Batch(t, Some(r)),
+            // Стиль обложки выбирается в своём блоке.
+            Target::Cover(_) => return,
         };
         self.design.last_edit = None;
         self.design_apply(next, true);
@@ -135,7 +137,7 @@ impl App {
             self.pick_template(r);
         }
 
-        let local = self.design.short.is_some();
+        let local = self.design.target.short().is_some();
         let user_id = match &self.batch.template_ref {
             Some(TemplateRef::User(id)) if self.templates.user(id).is_some() => Some(id.clone()),
             _ => None,
@@ -300,7 +302,7 @@ impl App {
         let id = self.templates.store.create(name, &t)?;
         self.templates.refresh();
         let name = self.template_label(&TemplateRef::User(id.clone()));
-        if self.design.short.is_none() {
+        if self.design.target == Target::Batch {
             self.batch.template.name = name.clone();
             self.batch.template_ref = Some(TemplateRef::User(id));
         }

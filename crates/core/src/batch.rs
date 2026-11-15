@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::banner::Banner;
+use crate::cover::Cover;
 use crate::insert::{BatchInsert, insert_inside};
 use crate::library::{self, DEFAULT_BUILTIN, TemplateRef};
 use crate::subtitles::SubtitleEdits;
@@ -167,6 +168,9 @@ pub struct Short {
     /// Этот шортс — без вставки пачки.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_insert: bool,
+    /// Обложка-кадр в начале шортса (SPEC §5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<Cover>,
 }
 
 impl Short {
@@ -189,6 +193,7 @@ impl Short {
             no_banner: false,
             insert_at: None,
             no_insert: false,
+            cover: None,
         }
     }
 

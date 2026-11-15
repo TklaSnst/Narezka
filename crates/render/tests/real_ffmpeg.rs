@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
 use sc_core::{AccentMode, Align, Background, BannerArt, BannerSide, BannerText, Border, Color, Layer, OutputSettings, Paint, Rect, Shadow, SubWord, SubtitleMode, Template, VAlign};
-use sc_render::{Encoder, InsertJob, RenderError, RenderJob};
+use sc_render::{CoverFrame, CoverJob, Encoder, InsertJob, RenderError, RenderJob};
 
 fn ffmpeg(args: &[&str]) -> Option<String> {
     let out = Command::new("ffmpeg").args(["-nostdin", "-hide_banner", "-v", "error"]).args(args).output().ok()?;
@@ -35,6 +35,7 @@ fn job(dir: &Path, input: &Path, name: &str) -> RenderJob {
         template,
         subtitles: vec![],
         insert: None,
+        cover: None,
         output: OutputSettings { video_bitrate_kbps: 2000, ..Default::default() },
         encoder: Encoder { name: "libx264".into(), vaapi_device: None },
         dest: dir.join(name),
@@ -345,4 +346,94 @@ fn renders_inserts() {
     assert!(max_volume(&j.dest, 1.1, 0.8) > -30.0, "звук вставки");
     let d = duration_of(&j.dest, "a:0");
     assert!((d - 3.0).abs() < 0.08, "звук: {d}");
+}
+
+/// Обложка: кадр (из любого места исходника или картинка) стоит первым, звук на нём — тишина;
+/// «звук сразу» — поверх первых кадров без сдвига.
+#[test]
+fn renders_covers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = |n: &str| tmp.path().join(n);
+    // Исходник: 2 с красного, потом 2 с синего; звук всё время.
+    let made = ffmpeg(&[
+        "-f", "lavfi", "-i", "color=c=red:s=640x360:r=30:d=2",
+        "-f", "lavfi", "-i", "color=c=blue:s=640x360:r=30:d=2",
+        "-f", "lavfi", "-i", "sine=f=440:d=4",
+        "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-map", "2:a",
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", p("src.mp4").to_str().unwrap(),
+    ]);
+    let pic = ffmpeg(&["-f", "lavfi", "-i", "color=c=lime:s=320x320", "-frames:v", "1", p("pic.png").to_str().unwrap()]);
+    if made.is_none() || pic.is_none() {
+        eprintln!("ffmpeg с libx264 недоступен — тест пропущен");
+        return;
+    }
+    let avg = |path: &Path, t: f64| {
+        let px = frame_rgb(path, t, (440, 900, 200, 100));
+        let n = px.len() as u32;
+        [0, 1, 2].map(|k| px.iter().map(|c| c[k] as u32).sum::<u32>() / n)
+    };
+    let cover = |frame: CoverFrame, sound_now: bool| {
+        let mut template = Template::minimal();
+        template.background = Background::Color { color: Color::BLACK };
+        Some(CoverJob { frame, template, frames: 15, sound_now })
+    };
+
+    // Кадр из красной части, шортс — в синей (2.5…3.5 с); обложка 15 кадров при 30 к/с = 0.5 с.
+    let mut j = job(tmp.path(), &p("src.mp4"), "frame.mp4");
+    (j.start, j.end) = (2.5, 3.5);
+    j.template.background = Background::Color { color: Color::BLACK };
+    j.cover = cover(CoverFrame::Source { t: 0.5 }, false);
+    j.run(&AtomicBool::new(false), |_| {}).unwrap();
+    let [r, g, b] = avg(&j.dest, 0.1);
+    assert!(r > 200 && b < 40, "обложка — красный кадр: {r} {g} {b}");
+    let [r, g, b] = avg(&j.dest, 0.8);
+    assert!(b > 200 && r < 40, "дальше — шортс: {r} {g} {b}");
+    for s in ["v:0", "a:0"] {
+        let d = duration_of(&j.dest, s);
+        assert!((d - 1.5).abs() < 0.08, "{s}: {d}");
+    }
+    assert!(max_volume(&j.dest, 0.0, 0.4) < -60.0, "на обложке тихо");
+    assert!(max_volume(&j.dest, 0.7, 0.6) > -30.0);
+
+    // Картинка вместо кадра, «звук сразу»: длина шортса не меняется, звук с первого кадра.
+    let mut j = job(tmp.path(), &p("src.mp4"), "image.mp4");
+    (j.start, j.end) = (2.5, 3.5);
+    j.cover = cover(CoverFrame::Image { path: p("pic.png"), size: (320, 320) }, true);
+    j.run(&AtomicBool::new(false), |_| {}).unwrap();
+    let [r, g, b] = avg(&j.dest, 0.1);
+    assert!(g > 200 && r < 60 && b < 60, "обложка — картинка: {r} {g} {b}");
+    let [r, g, b] = avg(&j.dest, 0.8);
+    assert!(b > 200 && g < 60, "дальше — шортс: {r} {g} {b}");
+    for s in ["v:0", "a:0"] {
+        let d = duration_of(&j.dest, s);
+        assert!((d - 1.0).abs() < 0.08, "{s}: {d}");
+    }
+    assert!(max_volume(&j.dest, 0.0, 0.4) > -30.0, "звук сразу");
+
+    // Обложка вместе со вставкой: вставка сдвигается на длину обложки, звук — тоже.
+    let made = ffmpeg(&[
+        "-f", "lavfi", "-i", "color=c=white:s=640x360:r=30:d=1",
+        "-c:v", "libx264", "-preset", "ultrafast", p("ad.mp4").to_str().unwrap(),
+    ]);
+    assert!(made.is_some());
+    let mut j = job(tmp.path(), &p("src.mp4"), "both.mp4");
+    (j.start, j.end) = (2.5, 3.5);
+    j.template.background = Background::Color { color: Color::BLACK };
+    let plan = j.template.insert_plan(sc_core::InsertMode::Slot, &[], false);
+    j.insert = Some(InsertJob { path: p("ad.mp4"), at: 3.0, duration: 1.0, size: (640, 360), has_audio: false, plan });
+    j.cover = cover(CoverFrame::Source { t: 0.5 }, false);
+    j.run(&AtomicBool::new(false), |_| {}).unwrap();
+    let [r, _, b] = avg(&j.dest, 0.1);
+    assert!(r > 200 && b < 40, "обложка");
+    let [r, _, b] = avg(&j.dest, 0.8);
+    assert!(b > 200 && r < 40, "шортс до вставки");
+    let [r, g, b] = avg(&j.dest, 1.5);
+    assert!(r > 200 && g > 200 && b > 200, "вставка сдвинута на обложку: {r} {g} {b}");
+    for s in ["v:0", "a:0"] {
+        let d = duration_of(&j.dest, s);
+        assert!((d - 2.5).abs() < 0.08, "{s}: {d}");
+    }
+    assert!(max_volume(&j.dest, 0.0, 0.4) < -60.0, "на обложке тихо");
+    assert!(max_volume(&j.dest, 1.1, 0.8) < -60.0, "во время вставки тихо");
+    assert!(max_volume(&j.dest, 2.1, 0.3) > -30.0, "после вставки звук");
 }

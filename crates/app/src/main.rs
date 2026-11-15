@@ -2,6 +2,7 @@
 
 mod analysis;
 mod banner;
+mod cover;
 mod cut;
 mod design;
 mod editor;
@@ -79,6 +80,9 @@ struct App {
     analysis: AnalysisState,
     /// Свои шаблоны пользователя.
     templates: Library,
+    /// Свои стили обложек (шаблоны обложек).
+    cover_styles: Library,
+    cover_ui: cover::CoverUi,
     subtitle_cache: subtitles::SubtitleCache,
     /// Библиотека ассетов, история их использования и состояние вкладки.
     assets: sc_library::Library,
@@ -111,6 +115,8 @@ impl App {
             i18n: I18n::new(settings.language),
             analysis: AnalysisState::new(&settings),
             templates: Library::new(UserTemplates::new(paths.templates_dir())),
+            cover_styles: Library::new(UserTemplates::new(paths.cover_styles_dir())),
+            cover_ui: cover::CoverUi::default(),
             assets: sc_library::Library::open(paths.library_dir()),
             history,
             preset_offer,
@@ -280,6 +286,7 @@ impl eframe::App for App {
             let t = t.with_vars(&templates::preview_vars(self));
             let insert = (self.cut.selected)
                 .filter(|_| matches!(self.tab, Tab::Cut | Tab::Design))
+                .filter(|_| !(self.tab == Tab::Design && matches!(self.design.target, design::Target::Cover(_))))
                 .and_then(|id| self.insert_info(id))
                 .map(|i| i.preview(&t, &banner_layers));
             (t, insert)

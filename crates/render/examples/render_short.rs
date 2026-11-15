@@ -50,6 +50,7 @@ fn main() {
         end,
         subtitles: words(start, end),
         insert: None,
+        cover: None,
         template: std::env::var_os("SC_TEMPLATE")
             .map(|p| Template::from_toml(&std::fs::read_to_string(p).unwrap()).unwrap())
             .unwrap_or_else(Template::minimal)

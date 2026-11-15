@@ -2785,7 +2785,13 @@ dependencies = [
 name = "sc-library"
 version = "0.1.0"
 dependencies = [
+ "log",
  "sc-core",
+ "sc-media",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -2961,6 +2967,8 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "env_logger",
+ "image",
+ "libc",
  "log",
  "raw-window-handle",
  "rfd",

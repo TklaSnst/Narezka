@@ -2,11 +2,13 @@
 //!
 //! ffmpeg — системный; что он умеет, выясняется при запуске (`Capabilities::detect`), а не предполагается.
 
+pub mod asset;
 pub mod caps;
 pub mod hash;
 pub mod probe;
 mod process;
 
+pub use asset::{probe_asset, thumbnail};
 pub use caps::{Capabilities, EncoderInfo, EncoderKind};
 pub use hash::quick_hash;
 pub use probe::probe;

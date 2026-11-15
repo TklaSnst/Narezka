@@ -8,6 +8,7 @@ mod export;
 mod fmt;
 mod import;
 mod jobs;
+mod library;
 mod player;
 mod raster_worker;
 mod sub_list;
@@ -77,6 +78,10 @@ struct App {
     /// Свои шаблоны пользователя.
     templates: Library,
     subtitle_cache: subtitles::SubtitleCache,
+    /// Библиотека ассетов, история их использования и состояние вкладки.
+    assets: sc_library::Library,
+    history: sc_core::History,
+    lib: library::LibraryState,
 }
 
 impl App {
@@ -99,6 +104,9 @@ impl App {
             i18n: I18n::new(settings.language),
             analysis: AnalysisState::new(&settings),
             templates: Library::new(UserTemplates::new(paths.templates_dir())),
+            assets: sc_library::Library::open(paths.library_dir()),
+            history: sc_library::load_history(&paths.history_file()),
+            lib: Default::default(),
             paths,
             settings,
             batch,
@@ -133,6 +141,11 @@ impl App {
                 Msg::Download(ev) => self.on_download(ev),
                 Msg::PickedModel(file) => self.on_picked_model(file),
                 Msg::PickedFile(target, file) => self.on_picked_file(target, file),
+                Msg::LibraryPicked(files) => {
+                    self.dialog_open = false;
+                    self.library_import(files);
+                }
+                Msg::LibraryImported(imp) => self.on_library_imported(imp),
             }
         }
         self.pump_analysis();
@@ -151,12 +164,14 @@ impl App {
             painter.text(
                 screen.center(),
                 egui::Align2::CENTER_CENTER,
-                self.i18n.tr("import-drop-here"),
+                self.i18n.tr(if self.tab == Tab::Library { "library-drop-here" } else { "import-drop-here" }),
                 egui::FontId::proportional(28.0),
                 egui::Color32::WHITE,
             );
         }
-        if !dropped.is_empty() {
+        if !dropped.is_empty() && self.tab == Tab::Library {
+            self.library_import(dropped);
+        } else if !dropped.is_empty() {
             self.tab = Tab::Import;
             self.add_paths(dropped);
         }
@@ -302,10 +317,8 @@ impl eframe::App for App {
             Tab::Cut => self.cut_ui(ui),
             Tab::Design => self.design_ui(ui),
             Tab::Export => self.export_ui(ui),
+            Tab::Library => self.library_ui(ui),
             Tab::Settings => self.settings_ui(ui),
-            _ => {
-                ui.label(self.i18n.tr("placeholder-not-ready"));
-            }
         });
         if let Some(p) = &self.player {
             p.end_frame();

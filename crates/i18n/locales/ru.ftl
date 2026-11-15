@@ -391,3 +391,61 @@ edge-none = Нет
 edge-line = Линия
 edge-shadow = Тень
 edge-both = Линия и тень
+
+## Библиотека (шаг 5.1)
+library-add = Добавить файлы…
+library-add-title = Добавить в библиотеку
+library-filter-files = Картинки, видео и шрифты
+library-drop-hint = или перетащите файлы в окно
+library-drop-here = Отпустите, чтобы добавить в библиотеку
+library-importing = Импорт: { $n }…
+library-search-hint = Поиск: имя или #тег
+library-all = Все
+library-empty = Библиотека пуста. Добавьте баннеры, рекламные вставки, картинки и шрифты — файлы копируются в библиотеку.
+library-nothing-found = Ничего не найдено.
+library-added = Добавлено: { $name }
+library-duplicate = «{ $name }» уже есть в библиотеке.
+library-deleted = Удалено: { $name }
+library-err-unreadable = Не удалось добавить «{ $name }»: это не картинка, видео или шрифт.
+library-err-io = Не удалось добавить «{ $name }»: { $error }
+library-err-save = Не удалось сохранить библиотеку: { $error }
+library-select-hint = Выберите ассет, чтобы увидеть подробности.
+library-name = Имя
+library-kind = Тип
+library-tags = Теги
+library-tags-hint = через запятую
+library-hide-banner = Скрывать баннер во время вставки
+library-info-font = Шрифт
+library-info-codec = Формат
+library-info-size = Размер
+library-info-duration = Длительность
+library-info-alpha = Прозрачность
+library-info-audio = Звук
+library-info-file = Файл
+library-info-added = Добавлен
+library-info-used = Использован
+library-used = { $n ->
+    [one] { $n } раз
+    [few] { $n } раза
+   *[other] { $n } раз
+}, последний — { $date }
+library-unused = ещё не использовался
+library-still = картинка
+library-yes = есть
+library-no = нет
+library-missing = ⚠ Файл ассета пропал из папки библиотеки.
+library-delete = Удалить
+library-delete-confirm = Удалить «{ $name }» из библиотеки? Файл будет удалён.
+library-cancel = Отмена
+library-open-dir = Открыть папку
+asset-kind-banner = Баннер
+asset-kind-insert = Вставка
+asset-kind-image = Картинка
+asset-kind-background = Фон
+asset-kind-font = Шрифт
+orientation-vertical = вертикальная
+orientation-horizontal = горизонтальная
+orientation-square = квадратная
+size-kb = { $n } КБ
+size-mb = { $n } МБ
+size-gb = { $n } ГБ

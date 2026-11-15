@@ -85,8 +85,9 @@ crates/
 
 **Transcript** (кэш по хэшу файла): слова `{text, start, end, prob}`, предложения, паузы, исключённые зоны.
 
-**Asset** (библиотека): тип (banner/insert/image/font/background), путь (копия в библиотеке), метаданные
-(размер, длительность, ориентация, альфа), теги, история использования (дата, позиция, параметры).
+**Asset** (библиотека, `sc-core::asset`): тип (banner/insert/image/font/background), файл (копия `<id>.<ext>` в библиотеке),
+хэш (отсев повторов), метаданные (размер, длительность — нет у картинки, fps, альфа, звук, кодек, имя шрифта), теги (одно слово),
+у вставки — «скрывать баннер». История — `History { uses: [{asset, role, at, rect?}] }` в `history.toml`.
 
 ## 4. Пайплайн анализа
 
@@ -169,7 +170,7 @@ ProRes — prores_ks. Доступность кодировщика опреде
 ## 7. Хранение (XDG)
 
 - `~/.config/shortscutter/` — `settings.toml`, пресеты качества
-- `~/.local/share/shortscutter/` — `templates/*.toml`, `library/` (копии ассетов + `library.toml`), `history.toml`, `fonts/`
+- `~/.local/share/shortscutter/` — `templates/*.toml`, `library/` (копии ассетов, `library.toml`, `thumbs/`), `history.toml`, `fonts/`
 - `~/.cache/shortscutter/` — `models/` (whisper, LLM, эмбеддинги), `analysis/`, `proxy/`, `tmp/`
 
 ## 8. Интерфейс

@@ -167,6 +167,8 @@ crates/
 ProRes — prores_ks. Доступность кодировщика определяется при запуске пробным кодированием нескольких кадров
 (`-encoders` не достаточно, см. DECISIONS), недоступные — неактивны в UI с подсказкой.
 Для VAAPI в хвост графа добавляется `format=nv12,hwupload` (`-vf` вместе с `-filter_complex` нельзя).
+Ключи кодировщиков — `sc-render::encode` по `OutputSettings::video(gpu)` (пресет или «Своё», `sc-core::encode`);
+формат хвоста — `GraphParams::pix_fmt` (yuv420p; ProRes — yuv422p10le / yuv444p10le). Звук — AAC / libopus / pcm_s16le.
 Пресет по умолчанию: `h264_vaapi` VBR 12 Мбит/с (maxrate ×1.5, bufsize ×2), AAC 192k; без VAAPI — libx264 veryfast 12 Мбит/с.
 Время упирается в граф (CPU), а не в кодировщик: ~26 с на минуту шортса 1080×1920@60 на i5-9400F (замеры — `phases/00-spikes.md`, 0.4).
 

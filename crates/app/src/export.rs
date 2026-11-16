@@ -56,6 +56,9 @@ impl App {
     fn encoder(&self) -> Option<Encoder> {
         let caps = self.caps.as_ref().filter(|c| c.usable())?;
         let out = &self.batch.output;
+        if !caps.has_audio_encoder(sc_render::encode::audio_encoder(out.audio.codec)) {
+            return None;
+        }
         let e = caps.encoder_for(out.codec, out.encoder)?;
         let vaapi_device = (e.kind == sc_media::EncoderKind::Gpu).then(|| caps.vaapi_device.clone()).flatten();
         Some(Encoder { name: e.name.to_owned(), vaapi_device })
@@ -201,14 +204,15 @@ impl App {
         let jobs = encoder.as_ref().map(|e| self.render_jobs(e)).unwrap_or_default();
         match &encoder {
             Some(e) => {
-                let mbps = format!("{:.1}", self.batch.output.video_bitrate_kbps as f64 / 1000.0);
-                ui.label(self.i18n.tr_args("export-encoder", &[("name", e.name.clone().into()), ("mbps", mbps.into())]));
+                let quality = self.quality_summary(sc_render::encode::is_vaapi(&e.name));
+                ui.label(self.i18n.tr_args("export-encoder", &[("name", e.name.clone().into()), ("quality", quality.into())]));
             }
             None if self.caps.is_none() => {
                 ui.label(self.i18n.tr("caps-checking"));
             }
             None => {
-                ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr("export-no-encoder"));
+                let codec = crate::output::codec_label(self.batch.output.codec);
+                ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr_args("export-no-encoder", &[("codec", codec.into())]));
             }
         }
 
@@ -293,6 +297,9 @@ impl App {
             });
             ui.end_row();
         });
+        ui.add_space(8.0);
+        ui.heading(self.i18n.tr("export-format"));
+        self.format_ui(ui);
     }
 
     fn plan_ui(&self, ui: &mut egui::Ui, jobs: &[RenderJob]) {

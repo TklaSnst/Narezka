@@ -10,6 +10,8 @@ use uuid::Uuid;
 
 use crate::banner::Banner;
 use crate::cover::Cover;
+pub use crate::encode::{AudioEncode, Codec, Container, ProResProfile, QualityPreset, VideoEncode};
+use crate::encode::preset;
 use crate::insert::{BatchInsert, insert_inside};
 use crate::library::{self, DEFAULT_BUILTIN, TemplateRef};
 use crate::subtitles::SubtitleEdits;
@@ -216,38 +218,6 @@ pub enum ConflictPolicy {
     Overwrite,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Container {
-    #[default]
-    Mp4,
-    Mkv,
-    Webm,
-    Mov,
-}
-
-impl Container {
-    pub fn extension(self) -> &'static str {
-        match self {
-            Container::Mp4 => "mp4",
-            Container::Mkv => "mkv",
-            Container::Webm => "webm",
-            Container::Mov => "mov",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Codec {
-    #[default]
-    H264,
-    Hevc,
-    Av1,
-    Vp9,
-    ProRes,
-}
-
 /// Чем кодировать: `Auto` — GPU, если пробное кодирование при запуске прошло, иначе CPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -267,9 +237,14 @@ pub struct OutputSettings {
     pub base_name: String,
     pub container: Container,
     pub codec: Codec,
+    /// Вариант ProRes (когда `codec` — ProRes).
+    pub prores: ProResProfile,
     pub encoder: EncoderPref,
-    pub video_bitrate_kbps: u32,
-    pub audio_bitrate_kbps: u32,
+    /// Пресет качества; `Custom` — значения `custom`.
+    pub quality: QualityPreset,
+    /// Расширенные настройки видео.
+    pub custom: VideoEncode,
+    pub audio: AudioEncode,
     /// Выходное разрешение; `None` — размер холста шаблона.
     pub resolution: Option<Canvas>,
     /// Частота кадров; `None` — как у исходника.
@@ -286,14 +261,36 @@ impl Default for OutputSettings {
             base_name: "short".into(),
             container: Container::Mp4,
             codec: Codec::H264,
+            prores: ProResProfile::default(),
             encoder: EncoderPref::Auto,
-            video_bitrate_kbps: 12_000,
-            audio_bitrate_kbps: 192,
+            quality: QualityPreset::Balanced,
+            custom: VideoEncode::default(),
+            audio: AudioEncode::default(),
             resolution: None,
             fps: None,
             conflict_policy: ConflictPolicy::Continue,
             export_metadata: false,
             notify: true,
+        }
+    }
+}
+
+impl OutputSettings {
+    /// Параметры видео: пресет для кодека или свои; `gpu` — выбран кодировщик VAAPI.
+    pub fn video(&self, gpu: bool) -> VideoEncode {
+        match self.quality {
+            QualityPreset::Custom => self.custom,
+            q => preset(self.codec, gpu, q),
+        }
+    }
+
+    /// Кодек и звук — допустимые для контейнера (иначе — первые из его списков).
+    pub fn normalize(&mut self) {
+        if !self.container.codecs().contains(&self.codec) {
+            self.codec = self.container.codecs()[0];
+        }
+        if !self.container.audio_codecs().contains(&self.audio.codec) {
+            self.audio.codec = self.container.audio_codecs()[0];
         }
     }
 }

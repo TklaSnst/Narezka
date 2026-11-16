@@ -94,8 +94,10 @@ pub struct GraphParams {
     pub resolution: Option<Canvas>,
     /// Частота кадров вывода; `None` — как у исходника.
     pub fps: Option<f64>,
-    /// Хвост для VAAPI: `format=nv12,hwupload` вместо `format=yuv420p`.
+    /// Хвост для VAAPI: `format=nv12,hwupload` вместо `format=<pix_fmt>`.
     pub vaapi: bool,
+    /// Формат пикселей для CPU-кодировщика (`yuv420p`, у ProRes — 10 бит 4:2:2/4:4:4).
+    pub pix_fmt: &'static str,
     /// Есть звук у исходника.
     pub audio: bool,
 }
@@ -304,7 +306,7 @@ pub fn build(
         tail += &format!("scale={}:{}:flags=lanczos,", r.width, r.height);
     }
     tail += "setsar=1,";
-    tail += if p.vaapi { "format=nv12,hwupload" } else { "format=yuv420p" };
+    tail += &if p.vaapi { "format=nv12,hwupload".to_owned() } else { format!("format={}", p.pix_fmt) };
     tail += "[out]";
     chains.push(tail);
 
@@ -388,7 +390,7 @@ mod tests {
     use sc_core::{Border, Color, Paint, Rect, Shadow};
 
     fn params(src: (u32, u32)) -> GraphParams {
-        GraphParams { src, src_fps: 60.0, resolution: None, fps: None, vaapi: false, audio: true }
+        GraphParams { src, src_fps: 60.0, resolution: None, fps: None, vaapi: false, pix_fmt: "yuv420p", audio: true }
     }
 
     fn graph(t: &Template, p: &GraphParams) -> Graph {
@@ -429,6 +431,7 @@ mod tests {
             resolution: Some(Canvas { width: 720, height: 1280 }),
             fps: Some(30.0),
             vaapi: true,
+            pix_fmt: "yuv420p",
             audio: true,
         };
         let g = graph(&t, &p);

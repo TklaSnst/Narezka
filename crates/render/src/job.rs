@@ -6,10 +6,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use sc_core::{Codec, Container, InsertPlan, OutputSettings, SubWord, Template, cover_duration};
+use sc_core::{Container, InsertPlan, OutputSettings, SubWord, Template, cover_duration};
 
 use sc_raster::Art;
 
+use crate::encode::{self, audio_args, muxer, video_args};
 use crate::graph::{self, CoverGraph, GraphParams, Input, InsertGraph};
 use crate::naming::part_path;
 use crate::subtitles::{self, SubtitleSeq};
@@ -137,6 +138,7 @@ impl RenderJob {
             resolution: self.output.resolution,
             fps: self.output.fps,
             vaapi: self.encoder.vaapi_device.is_some(),
+            pix_fmt: encode::pix_fmt(self.output.codec, self.output.prores),
             audio: self.has_audio,
         }
     }
@@ -205,12 +207,10 @@ impl RenderJob {
     /// `art` — растры шаблона задачи (`Art::new(&self.template)`), `subs` — [`Self::subtitle_sequences`].
     pub fn args(&self, art: &Art, subs: &[(usize, SubtitleSeq)]) -> Result<(Vec<String>, graph::Graph), RenderError> {
         self.template.validate()?;
-        let codec_args = encoder_args(&self.encoder.name, self.output.video_bitrate_kbps)?;
-        let codec = match self.encoder.name.as_str() {
-            n if n.starts_with("h264") || n == "libx264" => Codec::H264,
-            _ => Codec::Hevc,
-        };
-        let muxer = muxer(self.output.container, codec)?;
+        let out = &self.output;
+        let video = out.video(encode::is_vaapi(&self.encoder.name));
+        let codec_args = video_args(&self.encoder.name, &video, out.prores, self.out_fps())?;
+        let muxer = muxer(out.container, out.codec, out.audio.codec)?;
         let params = self.params(self.src_size);
         let positions: Vec<(usize, i32, i32)> = subs.iter().map(|(i, s)| (*i, s.x, s.y)).collect();
         let insert = self.insert_graph();
@@ -260,9 +260,8 @@ impl RenderJob {
         a.extend(["-filter_complex".into(), g.filter.clone(), "-map".into(), "[out]".into()]);
         a.extend(codec_args);
         if g.audio_out || self.has_audio {
-            let kbps = self.output.audio_bitrate_kbps;
-            a.extend(["-map", if g.audio_out { "[aout]" } else { "0:a:0" }, "-c:a", "aac"].map(String::from));
-            a.extend(["-b:a".into(), format!("{kbps}k")]);
+            a.extend(["-map", if g.audio_out { "[aout]" } else { "0:a:0" }].map(String::from));
+            a.extend(audio_args(&out.audio));
         } else {
             a.push("-an".into());
         }
@@ -462,40 +461,6 @@ fn secs(v: f64) -> String {
     format!("{v:.3}")
 }
 
-/// Параметры кодировщика (ARCHITECTURE §6): VBR, maxrate ×1.5, bufsize ×2.
-/// Остальные кодеки (AV1, VP9, ProRes) — на этапе 7.
-fn encoder_args(name: &str, kbps: u32) -> Result<Vec<String>, RenderError> {
-    let mut a: Vec<String> = vec!["-c:v".into(), name.into()];
-    match name {
-        "h264_vaapi" | "hevc_vaapi" => a.extend(["-rc_mode".into(), "VBR".into()]),
-        "libx264" => a.extend(["-preset".into(), "veryfast".into()]),
-        "libx265" => a.extend(["-preset".into(), "fast".into()]),
-        _ => return Err(RenderError::UnsupportedEncoder(name.into())),
-    }
-    a.extend([
-        "-b:v".into(),
-        format!("{kbps}k"),
-        "-maxrate".into(),
-        format!("{}k", kbps * 3 / 2),
-        "-bufsize".into(),
-        format!("{}k", kbps * 2),
-    ]);
-    if name == "hevc_vaapi" || name == "libx265" {
-        // Без тега hvc1 QuickTime и часть плееров не открывают HEVC в MP4.
-        a.extend(["-tag:v".into(), "hvc1".into()]);
-    }
-    Ok(a)
-}
-
-fn muxer(container: Container, codec: Codec) -> Result<&'static str, RenderError> {
-    match (container, codec) {
-        (Container::Mp4, Codec::H264 | Codec::Hevc) => Ok("mp4"),
-        (Container::Mov, Codec::H264 | Codec::Hevc) => Ok("mov"),
-        (Container::Mkv, _) => Ok("matroska"),
-        (c, _) => Err(RenderError::UnsupportedContainer(c.extension())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,7 +510,7 @@ mod tests {
     #[test]
     fn unsupported_combinations() {
         let art = Art::new(&Template::minimal()).unwrap();
-        assert!(matches!(job("libsvtav1", false).args(&art, &[]), Err(RenderError::UnsupportedEncoder(_))));
+        assert!(matches!(job("av1_nvenc", false).args(&art, &[]), Err(RenderError::UnsupportedEncoder(_))));
         let mut j = job("libx264", false);
         j.output.container = Container::Webm;
         assert!(matches!(j.args(&art, &[]), Err(RenderError::UnsupportedContainer("webm"))));

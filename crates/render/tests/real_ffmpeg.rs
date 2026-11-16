@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
-use sc_core::{AccentMode, Align, Background, BannerArt, BannerSide, BannerText, Border, Color, Layer, OutputSettings, Paint, Rect, Shadow, SubWord, SubtitleMode, Template, VAlign};
+use sc_core::{AudioCodec, Codec, Container, ProResProfile, QualityPreset, VideoEncode, AccentMode, Align, Background, BannerArt, BannerSide, BannerText, Border, Color, Layer, OutputSettings, Paint, Rect, Shadow, SubWord, SubtitleMode, Template, VAlign};
 use sc_render::{CoverFrame, CoverJob, Encoder, InsertJob, RenderError, RenderJob};
 
 fn ffmpeg(args: &[&str]) -> Option<String> {
@@ -36,7 +36,11 @@ fn job(dir: &Path, input: &Path, name: &str) -> RenderJob {
         subtitles: vec![],
         insert: None,
         cover: None,
-        output: OutputSettings { video_bitrate_kbps: 2000, ..Default::default() },
+        output: OutputSettings {
+            quality: QualityPreset::Custom,
+            custom: VideoEncode { bitrate_kbps: 2000, ..Default::default() },
+            ..Default::default()
+        },
         encoder: Encoder { name: "libx264".into(), vaapi_device: None },
         dest: dir.join(name),
         work_dir: dir.join(format!("work-{name}")),
@@ -436,4 +440,59 @@ fn renders_covers() {
     assert!(max_volume(&j.dest, 0.0, 0.4) < -60.0, "на обложке тихо");
     assert!(max_volume(&j.dest, 1.1, 0.8) < -60.0, "во время вставки тихо");
     assert!(max_volume(&j.dest, 2.1, 0.3) > -30.0, "после вставки звук");
+}
+
+fn has_encoder(name: &str) -> bool {
+    ffmpeg(&["-encoders"]).is_some_and(|l| l.lines().any(|l| l.split_whitespace().nth(1) == Some(name)))
+}
+
+/// Все форматы SPEC §6 на CPU-кодировщиках (отсутствующие в сборке — пропускаются):
+/// кодек, звук, формат пикселей и разрешение/частота вывода.
+#[test]
+fn renders_every_format() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("src.mp4");
+    let made = ffmpeg(&[
+        "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=3",
+        "-f", "lavfi", "-i", "sine=f=440:d=3",
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", input.to_str().unwrap(),
+    ]);
+    if made.is_none() {
+        eprintln!("ffmpeg с libx264 недоступен — тест пропущен");
+        return;
+    }
+    let cases = [
+        (Container::Mp4, Codec::Hevc, "libx265", AudioCodec::Aac, "hevc", "yuv420p", "aac"),
+        (Container::Mp4, Codec::Av1, "libsvtav1", AudioCodec::Opus, "av1", "yuv420p", "opus"),
+        (Container::Webm, Codec::Vp9, "libvpx-vp9", AudioCodec::Opus, "vp9", "yuv420p", "opus"),
+        (Container::Webm, Codec::Av1, "libsvtav1", AudioCodec::Opus, "av1", "yuv420p", "opus"),
+        // декодер ProRes сообщает 4444 как 12 бит
+        (Container::Mov, Codec::ProRes, "prores_ks", AudioCodec::Pcm, "prores", "yuv444p12le", "pcm_s16le"),
+        (Container::Mov, Codec::ProRes, "prores_ks", AudioCodec::Aac, "prores", "yuv422p10le", "aac"),
+    ];
+    for (k, (container, codec, encoder, audio, vname, pix, aname)) in cases.into_iter().enumerate() {
+        if !has_encoder(encoder) || (audio == AudioCodec::Opus && !has_encoder("libopus")) {
+            eprintln!("{encoder}: нет в сборке ffmpeg — пропуск");
+            continue;
+        }
+        let name = format!("f{k}.{}", container.extension());
+        let mut j = job(tmp.path(), &input, &name);
+        j.encoder = Encoder { name: encoder.into(), vaapi_device: None };
+        j.output.container = container;
+        j.output.codec = codec;
+        j.output.quality = QualityPreset::Fast;
+        j.output.audio.codec = audio;
+        j.output.prores = if pix == "yuv444p12le" { ProResProfile::P4444 } else { ProResProfile::Proxy };
+        j.output.resolution = Some(sc_core::Canvas { width: 720, height: 1280 });
+        j.output.fps = Some(60.0);
+        j.run(&AtomicBool::new(false), |_| {}).unwrap_or_else(|e| panic!("{encoder} в {name}: {e}"));
+        let out = Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height,pix_fmt,r_frame_rate", "-of", "csv=p=0"])
+            .arg(&j.dest)
+            .output()
+            .unwrap();
+        let info = String::from_utf8_lossy(&out.stdout);
+        assert!(info.contains(&format!("{vname},720,1280,{pix},60/1")), "{name}: {info}");
+        assert!(info.contains(aname), "{name}: {info}");
+    }
 }

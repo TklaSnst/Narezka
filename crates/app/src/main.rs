@@ -12,6 +12,7 @@ mod import;
 mod insert;
 mod jobs;
 mod library;
+mod output;
 mod player;
 mod raster_worker;
 mod sub_list;
@@ -77,6 +78,7 @@ struct App {
     cut: CutState,
     design: DesignState,
     export: ExportState,
+    output_ui: output::OutputUi,
     analysis: AnalysisState,
     /// Свои шаблоны пользователя.
     templates: Library,
@@ -135,6 +137,7 @@ impl App {
             cut: CutState::default(),
             design: DesignState::default(),
             export: ExportState::default(),
+            output_ui: output::OutputUi::default(),
             subtitle_cache: Default::default(),
         }
     }

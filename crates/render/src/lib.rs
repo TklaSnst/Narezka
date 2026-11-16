@@ -3,6 +3,7 @@
 //! От превью не зависит: кропы и параметры фона берутся из модели `sc-core` по тем же формулам.
 //! Кодировщик выбирает вызывающий (по `sc_media::Capabilities`). Очередь задач — этап 7.
 
+pub mod encode;
 pub mod graph;
 pub mod job;
 pub mod naming;

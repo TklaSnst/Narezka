@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::batch::{ConflictPolicy, OutputSettings};
+use crate::encode::OutputPreset;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Language {
@@ -42,6 +43,8 @@ pub struct Settings {
     pub analysis: AnalysisSettings,
     /// Длительность новой обложки, кадров (SPEC §5).
     pub cover_frames: u32,
+    /// Свои пресеты вывода (формат и качество).
+    pub output_presets: Vec<OutputPreset>,
 }
 
 /// Распознавание речи и нарезка.
@@ -72,6 +75,7 @@ impl Default for Settings {
             last_import_dir: None,
             analysis: AnalysisSettings::default(),
             cover_frames: crate::cover::COVER_FRAMES_DEFAULT,
+            output_presets: Vec::new(),
         }
     }
 }
@@ -165,7 +169,7 @@ mod tests {
         assert_eq!(s.language, Language::En);
         assert_eq!(s.render_jobs, 8);
         assert_eq!(s.output.base_name, "hrenn");
-        assert_eq!(s.output.video_bitrate_kbps, 12_000);
+        assert_eq!(s.output.video(true).bitrate_kbps, 12_000);
         assert_eq!(s.analysis.language, "ru");
     }
 

@@ -56,7 +56,12 @@ pub struct Capabilities {
     pub encoders: Vec<EncoderInfo>,
     /// Обязательные фильтры, которых нет в сборке.
     pub missing_filters: Vec<&'static str>,
+    /// Звуковые кодировщики из [`AUDIO_ENCODERS`], которые есть в сборке.
+    pub audio_encoders: Vec<&'static str>,
 }
+
+/// Звуковые кодировщики вывода (AAC, Opus, PCM): встроенные, кроме libopus.
+pub const AUDIO_ENCODERS: &[&str] = &["aac", "libopus", "pcm_s16le"];
 
 impl Capabilities {
     /// Полная проверка; занимает 1–3 с, вызывать в фоне.
@@ -89,7 +94,15 @@ impl Capabilities {
             }
         }
 
-        Self { ffmpeg_version: Some(ffmpeg_version), ffprobe: has_ffprobe(), vaapi_device, encoders, missing_filters }
+        let audio_encoders = AUDIO_ENCODERS.iter().copied().filter(|a| listed.iter().any(|n| n == a)).collect();
+        Self {
+            ffmpeg_version: Some(ffmpeg_version),
+            ffprobe: has_ffprobe(),
+            vaapi_device,
+            encoders,
+            missing_filters,
+            audio_encoders,
+        }
     }
 
     /// Можно ли импортировать и рендерить вообще.
@@ -109,6 +122,15 @@ impl Capabilities {
             EncoderPref::Cpu => pick(EncoderKind::Cpu),
             EncoderPref::Auto => pick(EncoderKind::Gpu).or_else(|| pick(EncoderKind::Cpu)),
         }
+    }
+
+    /// Есть ли рабочий кодировщик для кодека (GPU или CPU).
+    pub fn has_codec(&self, codec: Codec) -> bool {
+        self.encoder_for(codec, EncoderPref::Auto).is_some()
+    }
+
+    pub fn has_audio_encoder(&self, name: &str) -> bool {
+        self.audio_encoders.contains(&name)
     }
 
     pub fn working_encoders(&self, kind: EncoderKind) -> impl Iterator<Item = &EncoderInfo> {

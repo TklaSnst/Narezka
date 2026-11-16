@@ -5,6 +5,7 @@
 pub mod asset;
 pub mod banner;
 pub mod cover;
+pub mod encode;
 pub mod batch;
 pub mod geometry;
 pub mod insert;
@@ -24,6 +25,10 @@ pub use batch::{
     BatchPreset,
     Batch, BatchError, Codec, ConflictPolicy, Container, EncoderPref, MediaInfo, OutputSettings,
     MIN_SPLIT, Short, ShortFlag, ShortId, ShortStatus, Source, SourceId, SourceStatus, TimeRange,
+};
+pub use encode::{
+    AudioCodec, AudioEncode, FRAME_RATES, OutputPreset, ProResProfile, QualityPreset, RESOLUTIONS, RateMode, Speed,
+    VideoEncode, VideoProfile, preset,
 };
 pub use insert::{
     BatchInsert, INSERT_EDGE, InsertFit, InsertMode, InsertPlan, InsertZ, SHORTS_MAX, insert_fit, insert_inside, pauses,

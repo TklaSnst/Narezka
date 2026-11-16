@@ -142,10 +142,6 @@ export-start = { $n ->
    *[many] Рендер: { $n } шортсов
 }
 export-nothing = Отметьте шортсы на вкладке «Нарезка».
-export-progress = Шортс { $n } из { $total }: { $name }
-export-overall = Всего
-export-cancel = Отмена
-export-cancelled = Рендер отменён, недописанный файл удалён.
 export-status-running = Рендер { $n }/{ $total } · { $pct }%
 export-status-done = { $n ->
     [0] Рендер завершён, готовых файлов нет
@@ -609,3 +605,39 @@ export-preset-name = название пресета
 export-preset-ok = Сохранить
 export-preset-cancel = Отмена
 export-mbps = { $mbps } Мбит/с
+
+export-parallel = Одновременно
+export-parallel-hint = Сколько шортсов рендерить параллельно. Узкое место — граф на CPU: больше 2–3 почти не ускоряет.
+export-clear = Очистить список
+export-overall = Всего: { $n } из { $total }
+export-overall-paused = На паузе: { $n } из { $total }
+export-pause = ⏸ Пауза
+export-resume = ▶ Продолжить
+export-cancel-all = Отменить всё
+export-cancel-file = Отменить этот файл (недописанный удаляется)
+export-waiting = ждёт
+export-done-in = готов за { $time }
+export-file-cancelled = отменён
+export-log = Лог
+export-log-title = Лог ffmpeg: { $name }
+export-log-copy = Копировать
+export-copy-path = Копировать путь
+export-status-failed = { $n ->
+    [one] , { $n } с ошибкой
+    [few] , { $n } с ошибкой
+   *[many] , { $n } с ошибкой
+}
+export-status-paused = Рендер на паузе { $n }/{ $total } · { $pct }%
+export-conflict = Если имя занято
+export-conflict-policy-continue = Продолжить нумерацию
+export-conflict-policy-ask = Спросить
+export-conflict-policy-overwrite = Перезаписать
+export-conflict-title = Файлы уже есть
+export-conflict-text = { $n ->
+    [one] При нумерации с 1 будет перезаписан { $n } файл:
+    [few] При нумерации с 1 будут перезаписаны { $n } файла:
+   *[many] При нумерации с 1 будут перезаписаны { $n } файлов:
+}
+export-conflict-continue = Продолжить нумерацию
+export-conflict-overwrite = Перезаписать
+export-conflict-cancel = Отмена

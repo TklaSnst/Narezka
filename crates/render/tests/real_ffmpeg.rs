@@ -496,3 +496,114 @@ fn renders_every_format() {
         assert!(info.contains(aname), "{name}: {info}");
     }
 }
+
+/// Очередь: 2 задачи параллельно, пауза держит ffmpeg (готовых нет), отмена не начатой,
+/// ошибка одного файла не мешает остальным и отдаёт полный лог.
+#[test]
+fn queue_pauses_cancels_and_survives_errors() {
+    use sc_render::{Queue, QueueEvent};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("src.mp4");
+    let made = ffmpeg(&[
+        "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=3",
+        "-f", "lavfi", "-i", "sine=f=440:d=3",
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", input.to_str().unwrap(),
+    ]);
+    if made.is_none() {
+        eprintln!("ffmpeg с libx264 недоступен — тест пропущен");
+        return;
+    }
+    let mut jobs: Vec<RenderJob> = (1..=4).map(|n| job(tmp.path(), &input, &format!("q_{n}.mp4"))).collect();
+    jobs[1].input = tmp.path().join("нет-такого.mp4");
+    let dests: Vec<_> = jobs.iter().map(|j| j.dest.clone()).collect();
+
+    let (tx, rx) = mpsc::channel();
+    let tx = std::sync::Mutex::new(tx);
+    let q = Queue::start(jobs, 2, move |ev| {
+        let _ = tx.lock().unwrap().send(ev);
+    });
+    q.pause();
+    q.cancel(3);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(q.is_paused());
+    let during: Vec<QueueEvent> = rx.try_iter().collect();
+    assert!(
+        !during.iter().any(|e| matches!(e, QueueEvent::Finished { result: Ok(()), .. })),
+        "на паузе файлы не дописываются: {during:?}"
+    );
+    q.resume();
+
+    let mut results: Vec<Option<Result<(), RenderError>>> = (0..4).map(|_| None).collect();
+    for ev in during.into_iter().chain(std::iter::from_fn(|| rx.recv_timeout(Duration::from_secs(60)).ok())) {
+        match ev {
+            QueueEvent::Finished { index, result } => results[index] = Some(result),
+            QueueEvent::Done => break,
+            _ => {}
+        }
+    }
+    assert!(matches!(results[0], Some(Ok(()))), "{:?}", results[0]);
+    assert!(matches!(results[2], Some(Ok(()))), "{:?}", results[2]);
+    assert!(matches!(results[3], Some(Err(RenderError::Cancelled))), "{:?}", results[3]);
+    match &results[1] {
+        Some(Err(e @ RenderError::Failed { .. })) => {
+            let log = e.log();
+            assert!(log.starts_with("ffmpeg ") && log.contains("нет-такого.mp4"), "{log}");
+        }
+        r => panic!("ожидалась ошибка ffmpeg: {r:?}"),
+    }
+    assert!(dests[0].exists() && dests[2].exists());
+    assert!(!dests[1].exists() && !dests[3].exists());
+    assert!(!tmp.path().join(".q_2.mp4.part").exists());
+}
+
+/// Отмена идущего рендера на паузе: остановленный ffmpeg убивается, недописанный файл удаляется.
+#[test]
+fn queue_cancels_paused_job() {
+    use sc_render::{Queue, QueueEvent};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("src.mp4");
+    let made = ffmpeg(&[
+        "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=12",
+        "-f", "lavfi", "-i", "sine=f=440:d=12",
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", input.to_str().unwrap(),
+    ]);
+    if made.is_none() {
+        eprintln!("ffmpeg с libx264 недоступен — тест пропущен");
+        return;
+    }
+    let mut j = job(tmp.path(), &input, "long.mp4");
+    j.end = 11.5;
+    let dest = j.dest.clone();
+    let (tx, rx) = mpsc::channel();
+    let tx = std::sync::Mutex::new(tx);
+    let q = Queue::start(vec![j], 3, move |ev| {
+        let _ = tx.lock().unwrap().send(ev);
+    });
+    // Дождаться прогресса — ffmpeg точно запущен.
+    loop {
+        match rx.recv_timeout(Duration::from_secs(30)).expect("прогресс") {
+            QueueEvent::Progress { fraction, .. } if fraction > 0.0 => break,
+            QueueEvent::Finished { result, .. } => panic!("закончился раньше паузы: {result:?}"),
+            _ => {}
+        }
+    }
+    q.pause();
+    std::thread::sleep(Duration::from_millis(300));
+    q.cancel_all();
+    let mut cancelled = false;
+    while let Ok(ev) = rx.recv_timeout(Duration::from_secs(10)) {
+        match ev {
+            QueueEvent::Finished { result, .. } => cancelled = matches!(result, Err(RenderError::Cancelled)),
+            QueueEvent::Done => break,
+            _ => {}
+        }
+    }
+    assert!(cancelled);
+    assert!(!dest.exists() && !tmp.path().join(".long.mp4.part").exists());
+}

@@ -10,7 +10,6 @@ use sc_media::{Capabilities, MediaError};
 
 use crate::analysis::{AnalysisEvent, DownloadEvent};
 use crate::design::FileTarget;
-use crate::export::RenderEvent;
 
 pub enum Msg {
     Caps(Capabilities),
@@ -20,7 +19,7 @@ pub enum Msg {
     Probed { id: SourceId, result: Result<(MediaInfo, String), &'static str> },
     /// Папка вывода из диалога; `None` — диалог закрыт без выбора.
     PickedDir(Option<PathBuf>),
-    Render(RenderEvent),
+    Render(sc_render::QueueEvent),
     Analysis(AnalysisEvent),
     Download(DownloadEvent),
     /// Файл модели whisper из диалога; `None` — диалог закрыт без выбора.

@@ -97,12 +97,32 @@ pub enum RenderError {
     Raster(#[from] sc_raster::RasterError),
     #[error("не удалось запустить ffmpeg: {0}")]
     Spawn(std::io::Error),
-    #[error("ffmpeg завершился с ошибкой: {0}")]
-    Failed(String),
+    #[error("ffmpeg завершился с ошибкой: {tail}")]
+    Failed {
+        /// Последние строки stderr — для списка.
+        tail: String,
+        /// Команда и весь stderr — для окна лога.
+        log: String,
+    },
     #[error("отменено")]
     Cancelled,
     #[error("ошибка файла {path}: {source}")]
     Io { path: PathBuf, source: std::io::Error },
+}
+
+impl RenderError {
+    /// Подробный лог для пользователя: у ошибки ffmpeg — команда и весь stderr.
+    pub fn log(&self) -> String {
+        match self {
+            Self::Failed { log, .. } => log.clone(),
+            e => e.to_string(),
+        }
+    }
+}
+
+/// Команда для лога: `ffmpeg` и аргументы через пробел.
+fn command_line(args: &[String]) -> String {
+    format!("ffmpeg {}", args.join(" "))
 }
 
 impl RenderJob {
@@ -330,7 +350,18 @@ impl RenderJob {
 
     /// Рендерит; `progress` получает долю 0..1. Отмена — `cancel` в `true`: процесс завершается,
     /// недописанный файл удаляется. Итоговый файл появляется только после успешного завершения.
-    pub fn run(&self, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<(), RenderError> {
+    pub fn run(&self, cancel: &AtomicBool, progress: impl FnMut(f32)) -> Result<(), RenderError> {
+        self.run_with(cancel, &|_| {}, progress)
+    }
+
+    /// Как [`Self::run`]; `on_process` получает pid ffmpeg после запуска и `None` после завершения
+    /// (очередь ставит процесс на паузу сигналами).
+    pub fn run_with(
+        &self,
+        cancel: &AtomicBool,
+        on_process: &dyn Fn(Option<u32>),
+        mut progress: impl FnMut(f32),
+    ) -> Result<(), RenderError> {
         let art = Art::new(&self.template)?;
         let t0 = std::time::Instant::now();
         let subs = self.subtitle_sequences();
@@ -348,7 +379,7 @@ impl RenderJob {
         }
         self.write_inputs(&self.work_dir, &g, &art, &subs)?;
         if let Some(c) = &self.cover {
-            let result = self.render_cover(c, cancel);
+            let result = self.render_cover(c, cancel, on_process);
             if result.is_err() {
                 let _ = std::fs::remove_dir_all(&self.work_dir);
             }
@@ -357,7 +388,7 @@ impl RenderJob {
         log::info!("ffmpeg {}", args.join(" "));
 
         let part = part_path(&self.dest);
-        let result = self.spawn_and_wait(&args, cancel, &mut progress);
+        let result = self.spawn_and_wait(&args, cancel, on_process, &mut progress);
         let result = result.and_then(|()| std::fs::rename(&part, &self.dest).map_err(io(&self.dest)));
         if result.is_err() {
             let _ = std::fs::remove_file(&part);
@@ -370,7 +401,7 @@ impl RenderJob {
     }
 
     /// Предварительный проход: кадр обложки по её шаблону → `cover.png`.
-    fn render_cover(&self, c: &CoverJob, cancel: &AtomicBool) -> Result<(), RenderError> {
+    fn render_cover(&self, c: &CoverJob, cancel: &AtomicBool, on_process: &dyn Fn(Option<u32>)) -> Result<(), RenderError> {
         let art = Art::new(&c.template)?;
         let (args, g) = self.cover_args(&art)?.expect("обложка есть");
         self.write_inputs(&self.work_dir.join("cover"), &g, &art, &[])?;
@@ -378,22 +409,49 @@ impl RenderJob {
         if cancel.load(Ordering::Relaxed) {
             return Err(RenderError::Cancelled);
         }
-        let out = Command::new("ffmpeg").args(&args).stdin(Stdio::null()).output().map_err(RenderError::Spawn)?;
+        let child = Command::new("ffmpeg")
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(RenderError::Spawn)?;
+        on_process(Some(child.id()));
+        let out = child.wait_with_output();
+        on_process(None);
+        let out = out.map_err(RenderError::Spawn)?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(RenderError::Cancelled);
+        }
         if !out.status.success() || !self.cover_png().exists() {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-            return Err(RenderError::Failed(format!("обложка: {err}")));
+            let log = format!("{}\n\n{err}", command_line(&args));
+            return Err(RenderError::Failed { tail: format!("обложка: {}", tail_lines(&err)), log });
         }
         Ok(())
     }
 
-    fn spawn_and_wait(&self, args: &[String], cancel: &AtomicBool, progress: &mut impl FnMut(f32)) -> Result<(), RenderError> {
-        let mut child = Command::new("ffmpeg")
+    fn spawn_and_wait(
+        &self,
+        args: &[String],
+        cancel: &AtomicBool,
+        on_process: &dyn Fn(Option<u32>),
+        progress: &mut impl FnMut(f32),
+    ) -> Result<(), RenderError> {
+        let child = Command::new("ffmpeg")
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(RenderError::Spawn)?;
+        on_process(Some(child.id()));
+        let result = self.wait(child, args, cancel, progress);
+        on_process(None);
+        result
+    }
+
+    fn wait(&self, mut child: Child, args: &[String], cancel: &AtomicBool, progress: &mut impl FnMut(f32)) -> Result<(), RenderError> {
         let mut err = child.stderr.take().expect("stderr piped");
         let err_t = thread::spawn(move || {
             let mut s = String::new();
@@ -423,11 +481,17 @@ impl RenderJob {
         if status.success() {
             Ok(())
         } else {
-            let tail: Vec<&str> = stderr.lines().rev().take(6).collect();
-            let msg = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
-            Err(RenderError::Failed(if msg.is_empty() { status.to_string() } else { msg }))
+            let tail = tail_lines(&stderr);
+            let log = format!("{}\n\n{}\n{status}", command_line(args), stderr.trim_end());
+            Err(RenderError::Failed { tail: if tail.is_empty() { status.to_string() } else { tail }, log })
         }
     }
+}
+
+/// Последние строки stderr (там причина ошибки).
+fn tail_lines(stderr: &str) -> String {
+    let tail: Vec<&str> = stderr.lines().rev().take(6).collect();
+    tail.into_iter().rev().collect::<Vec<_>>().join("\n")
 }
 
 fn kill(mut child: Child) -> RenderError {

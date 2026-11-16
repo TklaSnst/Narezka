@@ -1,6 +1,6 @@
 //! Имена выходных файлов: `<имя>_1.mp4`, `<имя>_2.mp4`…
 
-use std::collections::HashMap;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use sc_core::{Batch, ConflictPolicy, ShortId, ShortStatus};
@@ -33,29 +33,46 @@ pub fn max_existing(dir: &Path, base: &str, ext: &str) -> u32 {
 
 /// Принятые шортсы пачки (по порядку исходников, затем по времени) и их выходные файлы.
 ///
-/// Нумерация сквозная в пределах каталога. «Продолжить» — после самого большого существующего номера,
-/// «Перезаписать» — с 1. «Спросить» пока ведёт себя как «Продолжить» (диалог — этап 7).
+/// Нумерация сквозная по пачке, с 1 (SPEC §6), даже если файлы ложатся в разные каталоги (рядом с исходниками).
+/// «Продолжить» — после самого большого существующего номера во всех каталогах вывода, «Перезаписать» — с 1.
+/// «Спросить» здесь — как «Продолжить»; решение спрашивает UI по [`conflicts`].
 pub fn plan_outputs(batch: &Batch) -> Vec<(ShortId, PathBuf)> {
+    plan_outputs_with(batch, batch.output.conflict_policy)
+}
+
+/// [`plan_outputs`] с явной политикой конфликтов.
+pub fn plan_outputs_with(batch: &Batch, policy: ConflictPolicy) -> Vec<(ShortId, PathBuf)> {
     let out = &batch.output;
     let base = sanitize_base(&out.base_name);
     let ext = out.container.extension();
-    let mut next: HashMap<PathBuf, u32> = HashMap::new();
-    let mut plan = Vec::new();
-    for source in &batch.sources {
-        let dir = match &out.dir {
-            Some(d) => d.clone(),
-            None => source.path.parent().map(Path::to_path_buf).unwrap_or_default(),
-        };
-        for short in batch.shorts_of(source.id).into_iter().filter(|s| s.status == ShortStatus::Accepted) {
-            let n = next.entry(dir.clone()).or_insert_with(|| match out.conflict_policy {
-                ConflictPolicy::Overwrite => 0,
-                ConflictPolicy::Continue | ConflictPolicy::Ask => max_existing(&dir, &base, ext),
-            });
-            *n += 1;
-            plan.push((short.id, dir.join(format!("{base}_{n}.{ext}"))));
+    let dir_of = |path: &Path| match &out.dir {
+        Some(d) => d.clone(),
+        None => path.parent().map(Path::to_path_buf).unwrap_or_default(),
+    };
+    let accepted: Vec<_> = (batch.sources.iter())
+        .flat_map(|source| {
+            let dir = dir_of(&source.path);
+            batch.shorts_of(source.id).into_iter().filter(|s| s.status == ShortStatus::Accepted).map(move |s| (s.id, dir.clone()))
+        })
+        .collect();
+    let mut n = match policy {
+        ConflictPolicy::Overwrite => 0,
+        ConflictPolicy::Continue | ConflictPolicy::Ask => {
+            let dirs: BTreeSet<&PathBuf> = accepted.iter().map(|(_, d)| d).collect();
+            dirs.into_iter().map(|d| max_existing(d, &base, ext)).max().unwrap_or(0)
         }
-    }
-    plan
+    };
+    (accepted.into_iter())
+        .map(|(id, dir)| {
+            n += 1;
+            (id, dir.join(format!("{base}_{n}.{ext}")))
+        })
+        .collect()
+}
+
+/// Файлы, которые нумерация с 1 перезаписала бы (для политики «Спросить»).
+pub fn conflicts(batch: &Batch) -> Vec<PathBuf> {
+    (plan_outputs_with(batch, ConflictPolicy::Overwrite).into_iter()).map(|(_, p)| p).filter(|p| p.exists()).collect()
 }
 
 /// Временный файл рядом с итоговым: `.<имя>.part` — недописанный файл не выглядит готовым.
@@ -112,6 +129,25 @@ mod tests {
         let plan = plan_outputs(&b);
         assert_eq!(plan[0].1, tmp.path().join("клип_1.mp4"));
         assert_eq!(plan[2].1, tmp.path().join("клип_3.mp4"));
+        assert_eq!(conflicts(&b), [tmp.path().join("клип_3.mp4")]);
+    }
+
+    #[test]
+    fn numbering_runs_through_batch_across_dirs() {
+        let (a, b_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(b_dir.path().join("клип_4.mp4"), b"").unwrap();
+        let mut b = Batch::default();
+        b.output.base_name = "клип".into();
+        for (dir, name) in [(a.path(), "a.mp4"), (b_dir.path(), "b.mp4")] {
+            let id = b.add_source(Source::new(dir.join(name)));
+            b.add_short(Short::manual(id, 0.0, 10.0)).unwrap();
+        }
+        let plan = plan_outputs(&b);
+        assert_eq!(plan[0].1, a.path().join("клип_5.mp4"));
+        assert_eq!(plan[1].1, b_dir.path().join("клип_6.mp4"));
+        assert!(conflicts(&b).is_empty());
+        let plan = plan_outputs_with(&b, ConflictPolicy::Overwrite);
+        assert_eq!(plan[1].1, b_dir.path().join("клип_2.mp4"));
     }
 
     #[test]

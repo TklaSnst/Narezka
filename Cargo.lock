@@ -2845,6 +2845,7 @@ dependencies = [
 name = "sc-render"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "log",
  "sc-core",
  "sc-raster",

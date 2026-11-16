@@ -139,10 +139,6 @@ export-start = { $n ->
    *[other] Render { $n } shorts
 }
 export-nothing = Mark shorts on the Cut tab.
-export-progress = Short { $n } of { $total }: { $name }
-export-overall = Total
-export-cancel = Cancel
-export-cancelled = Render cancelled, the partial file was removed.
 export-status-running = Rendering { $n }/{ $total } · { $pct }%
 export-status-done = { $n ->
     [0] Render finished, no files produced
@@ -601,3 +597,34 @@ export-preset-name = preset name
 export-preset-ok = Save
 export-preset-cancel = Cancel
 export-mbps = { $mbps } Mbit/s
+
+export-parallel = At once
+export-parallel-hint = How many shorts to render in parallel. The CPU filter graph is the bottleneck: more than 2–3 barely helps.
+export-clear = Clear list
+export-overall = Total: { $n } of { $total }
+export-overall-paused = Paused: { $n } of { $total }
+export-pause = ⏸ Pause
+export-resume = ▶ Resume
+export-cancel-all = Cancel all
+export-cancel-file = Cancel this file (the partial file is deleted)
+export-waiting = waiting
+export-done-in = done in { $time }
+export-file-cancelled = cancelled
+export-log = Log
+export-log-title = ffmpeg log: { $name }
+export-log-copy = Copy
+export-copy-path = Copy path
+export-status-failed = , { $n } failed
+export-status-paused = Render paused { $n }/{ $total } · { $pct }%
+export-conflict = If the name is taken
+export-conflict-policy-continue = Continue numbering
+export-conflict-policy-ask = Ask
+export-conflict-policy-overwrite = Overwrite
+export-conflict-title = Files already exist
+export-conflict-text = { $n ->
+    [one] Numbering from 1 would overwrite { $n } file:
+   *[other] Numbering from 1 would overwrite { $n } files:
+}
+export-conflict-continue = Continue numbering
+export-conflict-overwrite = Overwrite
+export-conflict-cancel = Cancel

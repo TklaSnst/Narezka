@@ -329,8 +329,9 @@ impl eframe::App for App {
                 if let Some((fraction, n, total)) = self.export.overall() {
                     ui.separator();
                     let pct = (fraction * 100.0).round() as i64;
+                    let key = if self.export.is_paused() { "export-status-paused" } else { "export-status-running" };
                     ui.label(self.i18n.tr_args(
-                        "export-status-running",
+                        key,
                         &[("n", (n as i64).into()), ("total", (total as i64).into()), ("pct", pct.into())],
                     ));
                 } else if let Some(s) = self.analysis_status() {

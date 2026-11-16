@@ -9,6 +9,7 @@ sc-core.workspace = true
 sc-raster.workspace = true
 thiserror.workspace = true
 log.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

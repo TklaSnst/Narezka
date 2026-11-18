@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use eframe::egui;
-use sc_core::{Batch, ConflictPolicy, TextVars};
+use sc_core::metadata::{self, MetaLabels, ShortMeta};
+use sc_core::{Batch, ConflictPolicy, ShortId, TextVars};
 use sc_render::{Encoder, Queue, QueueEvent, RenderError, RenderJob, plan_outputs_with};
 
 use crate::App;
@@ -31,6 +32,8 @@ struct QueuedFile {
     started: Option<Instant>,
     /// Время рендера, с (у законченных).
     elapsed: Option<f64>,
+    /// Описание `<имя>_<n>.txt` — пишется, когда видео готово (если включено).
+    meta: Option<String>,
 }
 
 impl QueuedFile {
@@ -99,7 +102,7 @@ impl App {
     }
 
     /// Задачи для принятых шортсов, у исходников которых есть сведения ffprobe.
-    fn render_jobs(&self, encoder: &Encoder, policy: ConflictPolicy) -> Vec<RenderJob> {
+    fn render_jobs(&self, encoder: &Encoder, policy: ConflictPolicy) -> Vec<(ShortId, RenderJob)> {
         let batch: &Batch = &self.batch;
         plan_outputs_with(batch, policy)
             .into_iter()
@@ -111,7 +114,7 @@ impl App {
                 let template = template.with_vars(&TextVars { part: batch.part_number(id), title: short.title.clone() });
                 let insert = self.insert_info(id).map(|i| i.job(&template, &banner_layers));
                 let cover = self.cover_job(id);
-                Some(RenderJob {
+                Some((id, RenderJob {
                     input: source.path.clone(),
                     src_size: (info.width, info.height),
                     src_fps: info.fps,
@@ -129,7 +132,7 @@ impl App {
                     encoder: encoder.clone(),
                     dest,
                     work_dir: self.paths.tmp_dir().join(format!("render-{}", id.0)),
-                })
+                }))
             })
             .collect()
     }
@@ -151,21 +154,43 @@ impl App {
         self.start_render(self.render_jobs(encoder, policy));
     }
 
-    fn start_render(&mut self, jobs: Vec<RenderJob>) {
+    /// Текст `.txt` шортса: заголовок, таймкоды в исходнике, речь с правками, хэштеги (пачки + ключевые слова).
+    fn short_meta(&self, id: ShortId) -> Option<String> {
+        let short = self.batch.short(id)?;
+        let source = self.batch.source(short.source_id)?;
+        let words = (self.transcript_of(short.source_id))
+            .map(|t| crate::subtitles::edited_words(&t, short).into_iter().map(|w| w.text).collect())
+            .unwrap_or_default();
+        let meta = ShortMeta {
+            title: short.title.clone(),
+            source: file_name(&source.path),
+            start: short.start,
+            end: short.end,
+            words,
+            hashtags: metadata::hashtags(&self.batch.output.hashtags, &short.keywords),
+        };
+        let labels = MetaLabels { source: self.i18n.tr("meta-source"), time: self.i18n.tr("meta-time") };
+        Some(metadata::format(&meta, &labels))
+    }
+
+    fn start_render(&mut self, jobs: Vec<(ShortId, RenderJob)>) {
         if jobs.is_empty() {
             return;
         }
         self.remember_batch();
+        let export_meta = self.batch.output.export_metadata;
         let files = (jobs.iter())
-            .map(|j| QueuedFile {
+            .map(|(id, j)| QueuedFile {
                 dest: j.dest.clone(),
                 input: j.input.clone(),
                 duration: j.duration(),
                 state: FileState::Waiting,
                 started: None,
                 elapsed: None,
+                meta: export_meta.then(|| self.short_meta(*id)).flatten(),
             })
             .collect();
+        let jobs = jobs.into_iter().map(|(_, j)| j).collect();
         let notify = self.jobs.notifier();
         let queue = Queue::start(jobs, self.settings.render_jobs as usize, move |ev| notify.send(Msg::Render(ev)));
         self.export = ExportState { run: Some(Run { queue, files, done: false }), ..Default::default() };
@@ -187,7 +212,12 @@ impl App {
                 let f = &mut r.files[index];
                 f.elapsed = f.started.map(|t| t.elapsed().as_secs_f64());
                 f.state = match result {
-                    Ok(()) => FileState::Done,
+                    Ok(()) => {
+                        if let Some(text) = &f.meta {
+                            write_meta(&f.dest, text);
+                        }
+                        FileState::Done
+                    }
                     Err(RenderError::Cancelled) => FileState::Cancelled,
                     Err(e) => FileState::Failed { tail: e.to_string(), log: e.log() },
                 };
@@ -206,7 +236,13 @@ impl App {
                 if failed > 0 {
                     status += &self.i18n.tr_args("export-status-failed", &[("n", failed.into())]);
                 }
-                self.status = Some(status);
+                self.status = Some(status.clone());
+                // Всё отменено пользователем — он и так в приложении.
+                if self.batch.output.notify && ok + failed > 0 {
+                    let dir = r.files.iter().find(|f| matches!(f.state, FileState::Done)).and_then(|f| f.dest.parent()).map(PathBuf::from);
+                    let summary = self.i18n.tr(if failed > 0 { "notify-done-errors" } else { "notify-done" });
+                    crate::notify::render_done(summary, status, self.i18n.tr("notify-open-dir"), dir);
+                }
             }
         }
     }
@@ -250,7 +286,8 @@ impl App {
             ConflictPolicy::Overwrite => ConflictPolicy::Overwrite,
             _ => ConflictPolicy::Continue,
         };
-        let jobs = encoder.as_ref().map(|e| self.render_jobs(e, policy)).unwrap_or_default();
+        let jobs: Vec<RenderJob> =
+            encoder.as_ref().map(|e| self.render_jobs(e, policy).into_iter().map(|(_, j)| j).collect()).unwrap_or_default();
         match &encoder {
             Some(e) => {
                 let quality = self.quality_summary(sc_render::encode::is_vaapi(&e.name));
@@ -484,6 +521,28 @@ impl App {
         }
     }
 
+    /// «После рендера»: уведомление и описание `.txt` с хэштегами.
+    fn after_render_ui(&mut self, ui: &mut egui::Ui) {
+        let out = &mut self.batch.output;
+        let before = (out.notify, out.export_metadata);
+        ui.checkbox(&mut out.notify, self.i18n.tr("export-notify")).on_hover_text(self.i18n.tr("export-notify-hint"));
+        let base = sc_render::naming::sanitize_base(&out.base_name);
+        let r = ui.checkbox(&mut out.export_metadata, self.i18n.tr_args("export-metadata", &[("name", format!("{base}_1.txt").into())]));
+        r.on_hover_text(self.i18n.tr("export-metadata-hint"));
+        let mut changed = before != (out.notify, out.export_metadata);
+        ui.add_enabled_ui(out.export_metadata, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(self.i18n.tr("export-hashtags"));
+                let edit = egui::TextEdit::singleline(&mut out.hashtags).hint_text("#shorts #lumenvpn").desired_width(320.0);
+                let r = ui.add(edit).on_hover_text(self.i18n.tr("export-hashtags-hint"));
+                changed |= r.lost_focus() && self.settings.output.hashtags != out.hashtags;
+            });
+        });
+        if changed {
+            self.save_output_settings();
+        }
+    }
+
     fn output_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.i18n.tr("export-output"));
         egui::Grid::new("output").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -535,6 +594,9 @@ impl App {
         ui.add_space(8.0);
         ui.heading(self.i18n.tr("export-format"));
         self.format_ui(ui);
+        ui.add_space(8.0);
+        ui.heading(self.i18n.tr("export-after"));
+        self.after_render_ui(ui);
     }
 
     fn plan_ui(&self, ui: &mut egui::Ui, jobs: &[RenderJob]) {
@@ -557,5 +619,13 @@ impl App {
                 ui.end_row();
             }
         });
+    }
+}
+
+/// `<имя>_<n>.txt` рядом с видео; не вышло — только в лог (видео уже готово).
+fn write_meta(video: &std::path::Path, text: &str) {
+    let path = video.with_extension("txt");
+    if let Err(e) = std::fs::write(&path, text) {
+        log::warn!("{}: {e}", path.display());
     }
 }

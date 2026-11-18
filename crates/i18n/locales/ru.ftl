@@ -641,3 +641,17 @@ export-conflict-text = { $n ->
 export-conflict-continue = Продолжить нумерацию
 export-conflict-overwrite = Перезаписать
 export-conflict-cancel = Отмена
+
+## Экспорт: после рендера (шаг 7.3)
+export-after = После рендера
+export-notify = Уведомить, когда всё готово
+export-notify-hint = Уведомление на рабочем столе (mako, dunst, swaync…). Клик по нему открывает папку с шортсами.
+export-metadata = Описание рядом с видео ({ $name })
+export-metadata-hint = Заголовок, таймкоды в исходнике, текст речи (с вашими правками) и хэштеги — чтобы скопировать при загрузке.
+export-hashtags = Хэштеги
+export-hashtags-hint = Общие для всех шортсов, потом — ключевые слова каждого шортса. YouTube игнорирует все хэштеги, если их больше 15 — лишние отбрасываются.
+meta-source = Исходник
+meta-time = Таймкоды
+notify-done = Шортсы готовы
+notify-done-errors = Рендер закончен с ошибками
+notify-open-dir = Открыть папку

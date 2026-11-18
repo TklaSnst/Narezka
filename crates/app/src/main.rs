@@ -12,6 +12,7 @@ mod import;
 mod insert;
 mod jobs;
 mod library;
+mod notify;
 mod output;
 mod player;
 mod raster_worker;

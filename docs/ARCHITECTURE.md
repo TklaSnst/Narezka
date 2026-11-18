@@ -76,7 +76,7 @@ crates/
 - `template` (ссылка + локальные правки)
 - `banner: Option<{asset, text?}>` — положение — рамка `BannerSlot` шаблона; `text` — промокод/ссылка рядом (сторона, шрифт, кегль, цвета)
 - `insert: Option<{asset, mode?}>` — вставка пачки (`mode` — весь экран / в место видео; `None` — по ориентации)
-- `output: { dir, base_name, container, codec, quality preset/advanced, resolution, fps, conflict_policy, export_metadata, notify }`
+- `output: { dir, base_name, container, codec, quality preset/advanced, resolution, fps, conflict_policy, export_metadata, hashtags, notify }`
 
 **Short** (шортс)
 - `source_id`, `in`, `out` (секунды, привязаны к границам слов)

@@ -250,7 +250,11 @@ pub struct OutputSettings {
     /// Частота кадров; `None` — как у исходника.
     pub fps: Option<f64>,
     pub conflict_policy: ConflictPolicy,
+    /// Писать рядом с видео `<имя>_<n>.txt` (заголовок, таймкоды, текст, хэштеги).
     pub export_metadata: bool,
+    /// Общие хэштеги пачки для `.txt` (перед ключевыми словами шортса).
+    pub hashtags: String,
+    /// Уведомление на рабочем столе, когда очередь рендера закончилась.
     pub notify: bool,
 }
 
@@ -270,6 +274,7 @@ impl Default for OutputSettings {
             fps: None,
             conflict_policy: ConflictPolicy::Continue,
             export_metadata: false,
+            hashtags: String::new(),
             notify: true,
         }
     }

@@ -18,6 +18,8 @@ eframe.workspace = true
 log.workspace = true
 env_logger.workspace = true
 rfd = "0.17"
+# Уведомление по окончании рендера (D-Bus через zbus, без libdbus).
+notify-rust = "4.19"
 # Миниатюры библиотеки (PNG от ffmpeg); версия — как у sc-raster.
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Локальное время для дат в библиотеке.

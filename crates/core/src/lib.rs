@@ -10,6 +10,7 @@ pub mod batch;
 pub mod geometry;
 pub mod insert;
 pub mod library;
+pub mod metadata;
 pub mod paths;
 pub mod settings;
 pub mod subtitles;

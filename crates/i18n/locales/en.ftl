@@ -628,3 +628,17 @@ export-conflict-text = { $n ->
 export-conflict-continue = Continue numbering
 export-conflict-overwrite = Overwrite
 export-conflict-cancel = Cancel
+
+## Export: after render (step 7.3)
+export-after = After render
+export-notify = Notify when done
+export-notify-hint = Desktop notification (mako, dunst, swaync…). Clicking it opens the folder with the shorts.
+export-metadata = Description next to the video ({ $name })
+export-metadata-hint = Title, timecodes in the source, speech text (with your edits) and hashtags — to copy when uploading.
+export-hashtags = Hashtags
+export-hashtags-hint = Common for all shorts, followed by each short's keywords. YouTube ignores all hashtags if there are more than 15 — extra ones are dropped.
+meta-source = Source
+meta-time = Timecodes
+notify-done = Shorts are ready
+notify-done-errors = Render finished with errors
+notify-open-dir = Open folder

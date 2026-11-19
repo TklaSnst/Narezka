@@ -14,7 +14,6 @@ settings-save-failed = Failed to save settings: { $error }
 lang-ru = Русский
 lang-en = English
 
-placeholder-not-ready = This section will appear in later steps.
 batch-summary = { $sources ->
     [0] The batch is empty
     [one] { $sources } video in the batch
@@ -80,6 +79,7 @@ cut-delete-short = Delete (Del)
 cut-zoom-fit = Whole video
 cut-timeline-hint = Wheel — zoom, Shift+wheel — scroll, click — seek. Drag the edges of the selected short or its yellow insert marker. N — next candidate, V — insert at cursor, Esc — deselect.
 cut-shorts-empty = No shorts left. Mark one by hand: in (I), out (O), Enter.
+cut-shorts-no-speech = No speech found in this video — mark a short by hand: in (I), out (O), Enter.
 cut-err-no-in = Mark the start first (I)
 cut-err-bad-range = The short must end after it starts
 cut-err-out-of-source = The short goes past the end of the video
@@ -119,6 +119,7 @@ cut-recut-running = Analysis: { $stage }
 cut-recut-queued = Queued for analysis
 cut-no-analysis = Candidates will appear after the video is analyzed. You can also mark a short by hand: in (I), out (O), Enter.
 cut-text-none = The text will appear after speech recognition.
+cut-text-no-speech = No speech found in this video — there is no text.
 cut-text-hint = Click a word to set the start, click again to set the end (padded into the pause); Enter — short, Z — skip zone; right-click a word of the selected short — subtitle keyword. Wheel over the text scrolls it.
 cut-err-bad-split = Put the playhead inside the short, not right at its edge
 cut-err-nothing-to-merge = There is no short to the right to merge with
@@ -171,6 +172,7 @@ analysis-status-running = Analyzing “{ $name }”: { $stage }{ $queued ->
    *[other] , { $queued } more queued
 }
 analysis-err-no-audio = No audio — manual cutting only
+analysis-no-speech = No speech found — manual cutting only
 analysis-err-no-model = Speech recognition model missing
 analysis-err-model-load = Failed to load the speech recognition model
 analysis-err-whisper = Speech recognition failed

@@ -682,14 +682,20 @@ impl CutJob {
         if let Some(c) = self.cached() {
             return Ok(c);
         }
+        let mut sentences = crate::sentences(t, &crate::SplitOptions::default());
+        let skipped = skipped(&sentences, &self.opts.skip);
+        // Речи нет (тишина, музыка, ролик в пару секунд) — резать нечего, модели не грузим.
+        if sentences.is_empty() {
+            let cutting = self.finish(vec![], vec![]);
+            progress(CutStage::Llm, 1.0);
+            return Ok(cutting);
+        }
         for model in [&self.embed_model, &self.llm_model] {
             if !model.is_file() {
                 return Err(AnalysisError::ModelMissing(model.clone()));
             }
         }
         let started = std::time::Instant::now();
-        let mut sentences = crate::sentences(t, &crate::SplitOptions::default());
-        let skipped = skipped(&sentences, &self.opts.skip);
 
         progress(CutStage::Structure, 0.0);
         let (emb, embed_bounds) = if sentences.len() < 3 {
@@ -781,6 +787,11 @@ impl CutJob {
             candidates.len(),
             started.elapsed().as_secs_f32(),
         );
+        Ok(self.finish(blocks, candidates))
+    }
+
+    /// Итог нарезки с записью в кэш.
+    fn finish(&self, blocks: Vec<Block>, candidates: Vec<Candidate>) -> Cutting {
         let cutting = Cutting {
             version: FORMAT_VERSION,
             model: self.model_name(),
@@ -792,7 +803,7 @@ impl CutJob {
         if let Err(e) = cutting.save_cached(&self.cache_dir, &self.hash) {
             log::warn!("кэш нарезки не записан: {e}");
         }
-        Ok(cutting)
+        cutting
     }
 
     /// Проход 2 для блока `bi`; `previous` — прошлый слишком длинный выбор (просим короче).
@@ -851,6 +862,32 @@ mod tests {
                 Sentence { words: i..i + 1, start, end: start + 4.0, text: format!("п{i}."), pause_after: 1.0, repeat: false }
             })
             .collect()
+    }
+
+    /// Ролик без речи: нарезка пустая и не требует моделей (их файлов нет).
+    #[test]
+    fn no_speech_cuts_nothing_without_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = CutJob {
+            hash: "silent".into(),
+            cache_dir: tmp.path().into(),
+            embed_model: tmp.path().join("нет-эмбеддингов.gguf"),
+            llm_model: tmp.path().join("нет-llm.gguf"),
+            prompts: Prompts::builtin(),
+            opts: CutOptions::default(),
+        };
+        let t = Transcript {
+            version: TR_VERSION,
+            model: String::new(),
+            language: "ru".into(),
+            prompt: String::new(),
+            words: vec![],
+            segments: vec![],
+            speech: vec![],
+        };
+        let c = job.run(&t, &AtomicBool::new(false), |_, _| {}).unwrap();
+        assert!(c.candidates.is_empty() && c.blocks.is_empty());
+        assert!(job.cached().is_some(), "пустой итог тоже кэшируется");
     }
 
     fn lb(sentence: usize, kind: BlockKind) -> LlmBoundary {

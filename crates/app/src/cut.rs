@@ -609,7 +609,12 @@ impl App {
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if shorts.is_empty() {
-                let key = if has_cutting { "cut-shorts-empty" } else { "cut-no-analysis" };
+                let no_speech = transcript.as_ref().is_some_and(|t| t.words.is_empty());
+                let key = match (no_speech, has_cutting) {
+                    (true, _) => "cut-shorts-no-speech",
+                    (false, true) => "cut-shorts-empty",
+                    (false, false) => "cut-no-analysis",
+                };
                 ui.weak(self.i18n.tr(key));
             }
             for (s, num) in &shorts {
@@ -772,8 +777,10 @@ impl App {
         let (Some(source), Some(p)) = (self.cut.source, &self.player) else { return };
         let pos = p.state.time;
         ui.add_space(2.0);
-        let Some(t) = self.transcript_of(source).filter(|t| !t.segments.is_empty()) else {
-            ui.weak(self.i18n.tr("cut-text-none"));
+        let t = self.transcript_of(source);
+        let recognized = t.is_some();
+        let Some(t) = t.filter(|t| !t.segments.is_empty()) else {
+            ui.weak(self.i18n.tr(if recognized { "cut-text-no-speech" } else { "cut-text-none" }));
             return;
         };
         let segs = &t.segments;

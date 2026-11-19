@@ -28,8 +28,8 @@ impl App {
         let title = self.i18n.tr("import-dialog-title");
         let filter = self.i18n.tr("import-dialog-filter");
         let dir = self.settings.last_import_dir.clone();
+        let mut dialog = self.file_dialog(title).add_filter(filter, VIDEO_EXTS);
         self.jobs.spawn(move || {
-            let mut dialog = rfd::FileDialog::new().set_title(title).add_filter(filter, VIDEO_EXTS);
             if let Some(dir) = dir {
                 dialog = dialog.set_directory(dir);
             }

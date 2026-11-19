@@ -42,10 +42,11 @@ impl App {
     pub(crate) fn library_pick(&mut self) {
         self.dialog_open = true;
         let (title, filter) = (self.i18n.tr("library-add-title"), self.i18n.tr("library-filter-files"));
+        let dialog = self.file_dialog(title);
         self.jobs.spawn(move || {
             let exts: Vec<&str> =
                 [sc_library::IMAGE_EXTS, sc_library::VIDEO_EXTS, sc_library::FONT_EXTS].concat();
-            let files = rfd::FileDialog::new().set_title(title).add_filter(filter, &exts).pick_files();
+            let files = dialog.add_filter(filter, &exts).pick_files();
             Msg::LibraryPicked(files.unwrap_or_default())
         });
     }

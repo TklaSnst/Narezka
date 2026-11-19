@@ -98,6 +98,7 @@ pub(crate) fn parse(json: &str) -> Result<MediaInfo, MediaError> {
     let fps = [&video.avg_frame_rate, &video.r_frame_rate]
         .into_iter()
         .find_map(|r| r.as_deref().and_then(parse_rate))
+        .map(snap_rate)
         .ok_or_else(|| MediaError::Parse("нет частоты кадров".into()))?;
 
     let duration = [p.format.as_ref().and_then(|f| f.duration.as_ref()), video.duration.as_ref()]
@@ -107,6 +108,17 @@ pub(crate) fn parse(json: &str) -> Result<MediaInfo, MediaError> {
         .ok_or_else(|| MediaError::Parse("нет длительности".into()))?;
 
     Ok(MediaInfo { duration, width, height, fps, has_audio })
+}
+
+/// Средняя частота VFR-видео (телефоны, записи экрана) бывает «30.4» — подтягивает её к ближайшей
+/// стандартной в пределах 2 %, чтобы шортс вышел с обычной постоянной частотой.
+fn snap_rate(r: f64) -> f64 {
+    const STD: [f64; 10] = [24000.0 / 1001.0, 24.0, 25.0, 30000.0 / 1001.0, 30.0, 48.0, 50.0, 60000.0 / 1001.0, 60.0, 120.0];
+    STD.into_iter()
+        .map(|s| (s, (r - s).abs() / s))
+        .filter(|(_, d)| *d < 0.02)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map_or(r, |(s, _)| s)
 }
 
 /// `"30000/1001"` → 29.97; `"0/0"` → None.
@@ -127,6 +139,18 @@ mod tests {
         assert!((parse_rate("30000/1001").unwrap() - 29.97).abs() < 0.01);
         assert_eq!(parse_rate("0/0"), None);
         assert_eq!(parse_rate("25"), Some(25.0));
+    }
+
+    #[test]
+    fn vfr_average_snaps_to_standard() {
+        assert!((snap_rate(29.87) - 30000.0 / 1001.0).abs() < 1e-9);
+        assert_eq!(snap_rate(30.4), 30.0);
+        assert!((snap_rate(29.97) - 30000.0 / 1001.0).abs() < 1e-9);
+        assert_eq!(snap_rate(60.7), 60.0);
+        assert_eq!(snap_rate(25.0), 25.0);
+        // далеко от стандартных — как есть
+        assert_eq!(snap_rate(15.0), 15.0);
+        assert_eq!(snap_rate(40.0), 40.0);
     }
 
     #[test]

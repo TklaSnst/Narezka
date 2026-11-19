@@ -431,8 +431,9 @@ impl App {
             _ => ("design-pick-image", "design-filter-image", IMAGE_EXTS),
         };
         let (title, filter) = (self.i18n.tr(title), self.i18n.tr(filter));
+        let dialog = self.file_dialog(title);
         self.jobs.spawn(move || {
-            let file = rfd::FileDialog::new().set_title(title).add_filter(filter, exts).pick_file();
+            let file = dialog.add_filter(filter, exts).pick_file();
             Msg::PickedFile(target, file)
         });
     }

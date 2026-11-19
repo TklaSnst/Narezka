@@ -76,6 +76,8 @@ struct App {
     /// `None` — libmpv не поднялся (причина в `player_error`), превью недоступно.
     player: Option<Player>,
     player_error: Option<String>,
+    /// Окно приложения — родитель диалогов портала.
+    parent: Option<ParentWindow>,
     cut: CutState,
     design: DesignState,
     export: ExportState,
@@ -95,7 +97,46 @@ struct App {
     preset_offer: bool,
 }
 
+/// Сырые ручки окна приложения для диалогов портала: с родителем (xdg-foreign) диалог открывается
+/// как дочерний — Hyprland ставит его плавающим поверх окна, а не отдельной плиткой.
+#[derive(Clone, Copy)]
+struct ParentWindow {
+    window: raw_window_handle::RawWindowHandle,
+    display: raw_window_handle::RawDisplayHandle,
+}
+
+impl ParentWindow {
+    fn of(cc: &eframe::CreationContext<'_>) -> Option<Self> {
+        use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+        Some(Self { window: cc.window_handle().ok()?.as_raw(), display: cc.display_handle().ok()?.as_raw() })
+    }
+}
+
+// Окно живёт столько же, сколько приложение, — ручки действительны всё время.
+impl raw_window_handle::HasWindowHandle for ParentWindow {
+    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(self.window) })
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for ParentWindow {
+    fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(self.display) })
+    }
+}
+
 impl App {
+    /// Диалог портала, привязанный к окну приложения. Класс окна у диалога — портала
+    /// (`xdg-desktop-portal-gtk` и т. п.), поэтому заголовок всегда «ShortsCutter — …»: по нему
+    /// диалоги ловит правило Hyprland (пример — в README).
+    pub(crate) fn file_dialog(&self, title: String) -> rfd::FileDialog {
+        let dialog = rfd::FileDialog::new().set_title(format!("{} — {title}", self.i18n.tr("app-title")));
+        match &self.parent {
+            Some(p) => dialog.set_parent(p),
+            None => dialog,
+        }
+    }
+
     fn new(cc: &eframe::CreationContext<'_>, paths: Paths, settings: Settings) -> Self {
         let mut batch = Batch { output: settings.output.clone(), ..Default::default() };
         if let Some(t) = dev_template() {
@@ -135,6 +176,7 @@ impl App {
             dnd_supported: std::env::var_os("WAYLAND_DISPLAY").is_none(),
             player,
             player_error,
+            parent: ParentWindow::of(cc),
             cut: CutState::default(),
             design: DesignState::default(),
             export: ExportState::default(),

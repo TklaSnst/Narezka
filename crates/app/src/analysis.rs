@@ -385,23 +385,28 @@ impl App {
                 }
             } else if let Some(t) = self.analysis.transcripts.get(&id) {
                 let n = t.words.len() as i64;
-                ui.label(self.i18n.tr_args("analysis-done", &[("words", n.into())]));
-                if let Some(c) = self.analysis.cuttings.get(&id) {
-                    let n = c.candidates.len() as i64;
-                    ui.label(self.i18n.tr_args("analysis-cut-done", &[("n", n.into())]));
-                    if ui.small_button("✂").on_hover_text(self.i18n.tr("analysis-recut")).clicked() {
-                        action = Some(RowAction::Recut(id));
-                    }
+                if n == 0 {
+                    // Тишина, музыка или ролик в пару секунд: резать по смыслу нечего.
+                    ui.weak(self.i18n.tr("analysis-no-speech"));
                 } else {
-                    if let Some(key) = self.analysis.cut_errors.get(&id) {
-                        if *key == "analysis-cancelled" {
-                            ui.weak(self.i18n.tr("analysis-cut-cancelled"));
-                        } else {
-                            ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr(key));
+                    ui.label(self.i18n.tr_args("analysis-done", &[("words", n.into())]));
+                    if let Some(c) = self.analysis.cuttings.get(&id) {
+                        let n = c.candidates.len() as i64;
+                        ui.label(self.i18n.tr_args("analysis-cut-done", &[("n", n.into())]));
+                        if ui.small_button("✂").on_hover_text(self.i18n.tr("analysis-recut")).clicked() {
+                            action = Some(RowAction::Recut(id));
                         }
-                    }
-                    if ui.small_button("▶").on_hover_text(self.i18n.tr("analysis-cut-start")).clicked() {
-                        action = Some(RowAction::Analyze(id));
+                    } else {
+                        if let Some(key) = self.analysis.cut_errors.get(&id) {
+                            if *key == "analysis-cancelled" {
+                                ui.weak(self.i18n.tr("analysis-cut-cancelled"));
+                            } else {
+                                ui.colored_label(ui.visuals().error_fg_color, self.i18n.tr(key));
+                            }
+                        }
+                        if ui.small_button("▶").on_hover_text(self.i18n.tr("analysis-cut-start")).clicked() {
+                            action = Some(RowAction::Analyze(id));
+                        }
                     }
                 }
                 if ui.small_button("⟳").on_hover_text(self.i18n.tr("analysis-redo")).clicked() {
@@ -494,8 +499,9 @@ impl App {
         let title = self.i18n.tr("models-pick-dialog");
         let filter = self.i18n.tr("models-pick-filter");
         let dir = self.paths.models_dir();
+        let dialog = self.file_dialog(title);
         self.jobs.spawn(move || {
-            let file = rfd::FileDialog::new().set_title(title).add_filter(filter, &["bin"]).set_directory(dir).pick_file();
+            let file = dialog.add_filter(filter, &["bin"]).set_directory(dir).pick_file();
             Msg::PickedModel(file)
         });
     }

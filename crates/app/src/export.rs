@@ -265,8 +265,8 @@ impl App {
         self.dialog_open = true;
         let title = self.i18n.tr("export-dir-dialog");
         let start = self.batch.output.dir.clone().or_else(|| self.settings.last_import_dir.clone());
+        let mut dialog = self.file_dialog(title);
         self.jobs.spawn(move || {
-            let mut dialog = rfd::FileDialog::new().set_title(title);
             if let Some(dir) = start {
                 dialog = dialog.set_directory(dir);
             }

@@ -2944,6 +2944,7 @@ dependencies = [
  "libc",
  "log",
  "sc-core",
+ "sc-media",
  "sc-raster",
  "serde",
  "serde_json",

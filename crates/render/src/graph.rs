@@ -132,10 +132,9 @@ pub fn build(
         ));
         head = String::from("[src]");
     }
-    // Вход: общая частота кадров и 8-битный yuv420p (для 8-битных исходников — без преобразования).
-    if let Some(fps) = p.fps {
-        head += &format!("fps={},", num(fps as f32));
-    }
+    // Вход: постоянная частота вывода (VFR-исходник иначе протекает в шортс через размытый фон,
+    // который идёт по меткам исходника) и 8-битный yuv420p (для 8-битных исходников — без преобразования).
+    head += &format!("fps={out_fps},");
     let branches = videos.len() + usize::from(blur);
     // Без видео и размытия (кадр не нужен) — исходник в никуда.
     head += &if branches == 0 { "nullsink".to_owned() } else { format!("format=yuv420p,split={branches}") };
@@ -402,7 +401,7 @@ mod tests {
         let g = graph(&Template::minimal(), &params((1920, 1080)));
         assert!(g.inputs.is_empty());
         let f = &g.filter;
-        assert!(f.starts_with("[0:v]format=yuv420p,split=2[bg][v0]"), "{f}");
+        assert!(f.starts_with("[0:v]fps=60,format=yuv420p,split=2[bg][v0]"), "{f}");
         // фон: полоса 9:16 из 16:9 → ¼ холста → сигма 10
         assert!(f.contains("[bg]crop=608:1080:656:0,scale=270:480,gblur=sigma=10,"), "{f}");
         assert!(f.contains("*0.7"), "{f}");
@@ -480,7 +479,7 @@ mod tests {
             ]
         );
         let f = &g.filter;
-        assert!(f.starts_with("[0:v]format=yuv420p,split=2[v0][v1]"), "{f}");
+        assert!(f.starts_with("[0:v]fps=60,format=yuv420p,split=2[v0][v1]"), "{f}");
         assert!(f.contains("[1:v]format=yuv420p[base0]"), "{f}");
         let order = [
             "[base0][2:v]overlay=0:960[base1]",
@@ -566,7 +565,7 @@ mod tests {
                 Input::Mask(MaskSpec { layer: 0, width: 1080, height: 608, radius: 0.03 * 1080.0 }),
             ]
         );
-        assert!(f.starts_with("[0:v]tpad=stop_mode=clone:stop_duration=15.000[pa];[pa][1:v]concat=n=2:v=1:a=0[src];\n[src]format=yuv420p,split=2[bg][v0]"), "{f}");
+        assert!(f.starts_with("[0:v]tpad=stop_mode=clone:stop_duration=15.000[pa];[pa][1:v]concat=n=2:v=1:a=0[src];\n[src]fps=60,format=yuv420p,split=2[bg][v0]"), "{f}");
         assert!(f.contains("[3:v]fps=60,crop=1918:1080:0:0,scale=1080:608:flags=lanczos,setsar=1,format=yuv420p,format=yuva420p[insa];[insa][4:v]alphamerge,setpts=PTS-STARTPTS+12.500/TB[ins]"), "{f}");
         assert!(f.contains("[base1][ins]overlay=0:656:eof_action=pass[base2]"), "{f}");
         assert!(f.contains("[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=12.500,apad=whole_dur=12.500[a0]"), "{f}");

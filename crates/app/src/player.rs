@@ -85,6 +85,42 @@ struct Subs {
     requested: Vec<SubKey>,
 }
 
+/// Размер кадра по свойствам mpv. `dwidth`/`dheight` — **до** поворота: в render API поворачивает сам VO
+/// (фильтр autorotate не вставляется), поэтому у телефонного видео с поворотом 90° они «лежачие»,
+/// а текстура кадра должна быть «стоячей» — как размер из ffprobe, по которому считаются кроп и рендер.
+#[derive(Debug, Clone, Copy, Default)]
+struct Frame {
+    w: u32,
+    h: u32,
+    rotate: i64,
+}
+
+/// Свойства mpv для [`Frame`].
+const FRAME_PROPS: [(&str, Format); 3] =
+    [("dwidth", Format::Int), ("dheight", Format::Int), ("video-out-params/rotate", Format::Int)];
+
+impl Frame {
+    /// Учитывает свойство; `false` — свойство не про размер.
+    fn update(&mut self, name: &str, value: &Option<Prop>) -> bool {
+        let v = match value {
+            Some(Prop::Int(v)) => *v,
+            _ => 0,
+        };
+        match name {
+            "dwidth" => self.w = v.max(0) as u32,
+            "dheight" => self.h = v.max(0) as u32,
+            "video-out-params/rotate" => self.rotate = v,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Размер кадра на экране (после поворота); (0, 0) — ещё неизвестен.
+    fn size(&self) -> (u32, u32) {
+        if self.rotate.rem_euclid(180) == 90 { (self.h, self.w) } else { (self.w, self.h) }
+    }
+}
+
 /// Последние известные значения свойств mpv.
 #[derive(Debug, Clone, Default)]
 pub struct State {
@@ -95,6 +131,7 @@ pub struct State {
     pub size: (u32, u32),
     /// Ошибка открытия последнего файла.
     pub error: Option<String>,
+    frame: Frame,
 }
 
 /// Рекламная вставка выбранного шортса: когда воспроизведение доходит до `at` (секунды исходника),
@@ -111,7 +148,7 @@ pub struct PreviewInsert {
 struct InsertPlayer {
     mpv: Mpv,
     path: PathBuf,
-    size: (u32, u32),
+    frame: Frame,
     time: f64,
     eof: bool,
 }
@@ -120,7 +157,7 @@ struct InsertPlayer {
 struct BgVideo {
     mpv: Mpv,
     path: PathBuf,
-    size: (u32, u32),
+    frame: Frame,
     paused: bool,
 }
 
@@ -202,9 +239,10 @@ impl Player {
             ("time-pos", Format::Double),
             ("duration", Format::Double),
             ("pause", Format::Flag),
-            ("dwidth", Format::Int),
-            ("dheight", Format::Int),
-        ] {
+        ]
+        .into_iter()
+        .chain(FRAME_PROPS)
+        {
             mpv.observe(name, f);
         }
         let comp = unsafe { Compositor::new(&gl)? };
@@ -395,11 +433,11 @@ impl Player {
         let mpv = Mpv::new(&MPV_OPTIONS, self.get_proc.clone(), self.wl_display, Arc::new(move || wake.request_repaint()))
             .map_err(|e| log::error!("mpv вставки: {e}"))
             .ok()?;
-        for (name, f) in [("time-pos", Format::Double), ("eof-reached", Format::Flag), ("dwidth", Format::Int), ("dheight", Format::Int)] {
+        for (name, f) in [("time-pos", Format::Double), ("eof-reached", Format::Flag)].into_iter().chain(FRAME_PROPS) {
             mpv.observe(name, f);
         }
         mpv.command(&["loadfile", &path.to_string_lossy()]);
-        Some(InsertPlayer { mpv, path, size: (0, 0), time: 0.0, eof: false })
+        Some(InsertPlayer { mpv, path, frame: Frame::default(), time: 0.0, eof: false })
     }
 
     /// Основной плеер встаёт на месте вставки, вставка играет с начала.
@@ -435,8 +473,7 @@ impl Player {
         if let Some(ins) = &mut self.ins {
             while let Some(ev) = ins.mpv.poll_event() {
                 match ev {
-                    Event::Property { name, value: Some(Prop::Int(v)) } if name == "dwidth" => ins.size.0 = v as u32,
-                    Event::Property { name, value: Some(Prop::Int(v)) } if name == "dheight" => ins.size.1 = v as u32,
+                    Event::Property { name, value } if ins.frame.update(&name, &value) => {}
                     Event::Property { name, value: Some(Prop::Double(t)) } if name == "time-pos" => ins.time = t,
                     Event::Property { name, value } if name == "eof-reached" => ins.eof = matches!(value, Some(Prop::Flag(true))),
                     Event::EndFile { error: Some(e) } => log::error!("mpv не открыл вставку {:?}: {e}", ins.path),
@@ -456,7 +493,7 @@ impl Player {
                 self.start_insert();
             }
         }
-        let size = self.ins.as_ref().map(|i| i.size);
+        let size = self.ins.as_ref().map(|i| i.frame.size());
         if let Err(e) = unsafe { self.comp.ensure_insert(&self.gl, size) } {
             log::error!("текстура вставки: {e}");
         }
@@ -876,10 +913,11 @@ impl Player {
         let mpv = Mpv::new(&options, self.get_proc.clone(), self.wl_display, Arc::new(move || wake.request_repaint()))
             .map_err(|e| log::error!("mpv видео-фона: {e}"))
             .ok()?;
-        mpv.observe("dwidth", Format::Int);
-        mpv.observe("dheight", Format::Int);
+        for (name, f) in FRAME_PROPS {
+            mpv.observe(name, f);
+        }
         mpv.command(&["loadfile", &path.to_string_lossy()]);
-        Some(BgVideo { mpv, path, size: (0, 0), paused: true })
+        Some(BgVideo { mpv, path, frame: Frame::default(), paused: true })
     }
 
     /// События видео-фона, его текстура и пауза вместе с основным плеером.
@@ -887,8 +925,7 @@ impl Player {
         if let Some(bg) = &mut self.bg {
             while let Some(ev) = bg.mpv.poll_event() {
                 match ev {
-                    Event::Property { name, value: Some(Prop::Int(v)) } if name == "dwidth" => bg.size.0 = v as u32,
-                    Event::Property { name, value: Some(Prop::Int(v)) } if name == "dheight" => bg.size.1 = v as u32,
+                    Event::Property { name, value } if bg.frame.update(&name, &value) => {}
                     Event::EndFile { error: Some(e) } => log::error!("mpv не открыл видео-фон {:?}: {e}", bg.path),
                     _ => {}
                 }
@@ -898,7 +935,7 @@ impl Player {
                 bg.paused = self.state.paused;
             }
         }
-        let size = self.bg.as_ref().map(|b| b.size);
+        let size = self.bg.as_ref().map(|b| b.frame.size());
         if let Err(e) = unsafe { self.comp.ensure_bg_video(&self.gl, size) } {
             log::error!("текстура видео-фона: {e}");
         }
@@ -920,8 +957,7 @@ impl Player {
             // Во время вставки основной стоит по нашей команде — это не пауза пользователя.
             "pause" if self.ins_active => {}
             "pause" => self.state.paused = !matches!(value, Some(Prop::Flag(false))),
-            "dwidth" => self.state.size.0 = f(&value) as u32,
-            "dheight" => self.state.size.1 = f(&value) as u32,
+            _ if self.state.frame.update(name, &value) => self.state.size = self.state.frame.size(),
             _ => {}
         }
     }
@@ -944,5 +980,28 @@ impl Player {
         drop(self.ins.take());
         drop(self.mpv);
         unsafe { self.comp.delete(gl) };
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn rotated_frame_stands_up() {
+        let mut f = Frame::default();
+        assert_eq!(f.size(), (0, 0));
+        assert!(f.update("dwidth", &Some(Prop::Int(1280))));
+        assert!(f.update("dheight", &Some(Prop::Int(720))));
+        assert_eq!(f.size(), (1280, 720));
+        // mpv отдаёт 90/180/270; телефон «вверх ногами» — без перестановки
+        assert!(f.update("video-out-params/rotate", &Some(Prop::Int(270))));
+        assert_eq!(f.size(), (720, 1280));
+        f.update("video-out-params/rotate", &Some(Prop::Int(180)));
+        assert_eq!(f.size(), (1280, 720));
+        // новое видео без кадра — свойство пропало
+        f.update("video-out-params/rotate", &None);
+        assert_eq!(f.size(), (1280, 720));
+        assert!(!f.update("time-pos", &Some(Prop::Double(1.0))));
     }
 }

@@ -119,4 +119,5 @@
 - 2026-11-19 — Пакет: whisper.cpp и llama.cpp в `.deb` собраны под x86-64-v3 (`SC_PORTABLE=1`: `GGML_NATIVE=OFF`, AVX2/FMA/F16C/BMI2), профилем `dist` в отдельном `target/dist`. — `GGML_NATIVE` привязывает к CPU сборщика; всё тяжёлое считает Vulkan, а варианты CPU-бэкенда (`GGML_CPU_ALL_VARIANTS`) требуют динамической загрузки бэкендов. CPU без AVX2 не поддерживаются.
 - 2026-11-19 — `llama-server` в пакете — `/usr/lib/shortscutter/`, приложение ищет его и в `<exe>/../lib/shortscutter/`. — В `/usr/bin` возможен конфликт с пакетом llama.cpp; версия сервера должна совпадать с нашей.
 - 2026-11-19 — mesa-va-drivers и mesa-vulkan-drivers — Recommends, а не Depends; ffmpeg и xdg-desktop-portal — Depends. — На NVIDIA mesa не нужна; без ffmpeg и портала приложение не работает (рендер, диалоги файлов).
-
+- 2026-11-19 — Насыщенность встроенных шрифтов — из PostScript-имени начертания, а не из `usWeightClass`. — У JetBrains Mono 2.304 Bold там 558: без системной копии «Bold» становился ExtraBold; файлы OFL-шрифтов не меняем.
+- 2026-11-19 — Проверка на не-Debian — Arch в bwrap (rootfs bootstrap, uid 0 в user namespace) на ПК, а не docker на VPS. — На VPS 2 CPU и ~1 ГБ свободной памяти рядом с продом; на ПК docker нет, но bwrap разрешён AppArmor и даёт настоящий GPU.

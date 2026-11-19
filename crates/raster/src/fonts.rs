@@ -54,6 +54,7 @@ pub(crate) static FONTS: LazyLock<Mutex<Fonts>> = LazyLock::new(|| {
     for data in BUNDLED {
         db.load_font_data(data.to_vec());
     }
+    fix_bundled_weights(&mut db);
     db.load_system_fonts();
     if let Some(dir) = USER_DIR.get() {
         db.load_fonts_dir(dir);
@@ -64,6 +65,24 @@ pub(crate) static FONTS: LazyLock<Mutex<Fonts>> = LazyLock::new(|| {
     *LIST.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(list(&db)));
     Mutex::new(Fonts { system: FontSystem::new_with_locale_and_db(locale(), db), cache: SwashCache::new() })
 });
+
+/// Насыщенность встроенных начертаний — по имени (`JetBrainsMono-Bold` → 700), а не по `usWeightClass`: у
+/// JetBrains Mono 2.304 Bold там 558, и без системной копии семейства у моноширинного не было 700 — «Bold»
+/// уходил в ExtraBold. Вызывать, пока в базе только встроенные.
+fn fix_bundled_weights(db: &mut fontdb::Database) {
+    let wrong: Vec<fontdb::FaceInfo> = db
+        .faces()
+        .filter_map(|f| {
+            let style = f.post_script_name.rsplit_once('-')?.1;
+            let (w, _) = WEIGHTS.iter().find(|(_, name)| *name == style)?;
+            (f.weight.0 != *w).then(|| fontdb::FaceInfo { weight: fontdb::Weight(*w), ..f.clone() })
+        })
+        .collect();
+    for face in wrong {
+        db.remove_face(face.id);
+        db.push_face_info(face);
+    }
+}
 
 /// Список семейств для интерфейса — готов после загрузки шрифтов.
 static LIST: RwLock<Option<Arc<Vec<FontFamily>>>> = RwLock::new(None);
@@ -291,6 +310,16 @@ mod tests {
 
         let fonts = FONTS.lock().unwrap();
         let db = fonts.system.db();
+        // Насыщенности самих встроенных файлов: системная копия семейства не должна закрывать ошибку.
+        for (name, weights) in [(SANS, &[400, 700, 800, 900][..]), (MONO, &[400, 700, 800])] {
+            let mut have: Vec<u16> = db
+                .faces()
+                .filter(|f| matches!(f.source, fontdb::Source::Binary(_)) && f.families[0].0 == name)
+                .map(|f| f.weight.0)
+                .collect();
+            have.sort_unstable();
+            assert_eq!(have, weights, "{name}: встроенные начертания");
+        }
         for name in [PIXEL, SANS, MONO] {
             let q = fontdb::Query { families: &[fontdb::Family::Name(name)], ..Default::default() };
             let id = db.query(&q).unwrap();

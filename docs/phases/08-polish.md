@@ -15,8 +15,8 @@
 - [x] Установка на чистую Ubuntu (VM или контейнер) и запуск
 
 ## Шаг 8.3 — Совместимость
-- [ ] Проверка на одном не-Debian дистрибутиве (Arch или Fedora) из исходников
-- [ ] README: установка, сборка из исходников, требования
+- [x] Проверка на одном не-Debian дистрибутиве (Arch или Fedora) из исходников
+- [x] README: установка, сборка из исходников, требования
 
 ## Критерии приёмки
 - Пользователь ставит `.deb` и проходит полный цикл: импорт → нарезка → оформление → рендер.
@@ -100,3 +100,35 @@ AppArmor). `apt install ./shortscutter.deb` ставит всё сам, у би�
 - В бинарник зашит путь `SC_LLAMA_SERVER_BUILT` из машины сборки — это последний запасной путь, в пакете не используется.
 - Версия пакета `0.1.0-1` — из `workspace.package.version`.
 
+### Шаг 8.3 (2026-11-19) — выполнен по коду
+
+**Arch Linux из исходников** — rootfs `archlinux-bootstrap` на ПК, вход через `bwrap` с uid 0 в пространстве имён
+пользователя (`~/work/distrotest/arch.sh`, вне репо; docker на ПК нет, а на VPS мало памяти для ggml-vulkan рядом с продом).
+pacman в bwrap работает, если в `pacman.conf` закомментировать `DownloadUser` и `CheckSpace`; хуки с systemd падают —
+на сборку не влияет. Корень rootfs после установки `filesystem` — 555, сборку класть в `/root/build`.
+GPU пробрасывается (`--dev-bind /dev/dri`, `--ro-bind /sys`) — в Arch видны RADV и VAAPI с настоящей RX 6600.
+
+Пакеты: `base-devel git cmake clang rustup vulkan-headers vulkan-icd-loader shaderc spirv-headers mpv ffmpeg`
+(+ `vulkan-radeon` для AMD). Rust 1.100 (rustup), Mesa 26.2.7, ffmpeg n9.0.2.
+- **Нужен `spirv-headers`**: свежий llama.cpp (ggml-vulkan) ищет `SPIRV-HeadersConfig.cmake` — без пакета cmake падает.
+  На Ubuntu он был поставлен раньше, поэтому не замечали; в README добавлен во все три списка.
+- `cargo build --release -p shortscutter` — 6 мин 26 с на 6 ядрах, `ldd` без ненайденных; `cargo test --workspace --release` —
+  все 180 зелёные (после исправления ниже); пример `transcribe` на `media/twitch-1min.wav` — 101 слово за 8.6 с на Vulkan,
+  как на Ubuntu; приложение в headless sway (pixman): окно, ffmpeg 9.0.2, `h264_vaapi`/`hevc_vaapi` работают, `av1_vaapi`
+  отбракован пробным кодированием, ролик распознан, предложение скачать LLM (скриншот — `/root/work/shots/arch-run.png` на VPS).
+
+**Ошибка, найденная на Arch:** во встроенном `JetBrainsMono-Bold.ttf` (2.304) `usWeightClass` = 558, а не 700. Без
+системной копии JetBrains Mono у моноширинного не было начертания 700, и «Bold» рисовался ExtraBold-ом (ближайший вес).
+На ПК пользователя тест проходил, потому что там стоит системный JetBrains Mono. Исправление — `fix_bundled_weights` в
+`sc-raster::fonts`: у встроенных начертаний вес берётся из PostScript-имени (`…-Bold` → 700), файлы шрифтов не меняются.
+Тест `bundled_fonts` теперь проверяет веса самих встроенных файлов (без исправления — падает: `[400, 558, 800]`).
+
+**README** переписан: требования (CPU с AVX2, Vulkan-GPU от 8 ГБ, ffmpeg/libmpv, портал, модели ~8.2 ГБ), установка `.deb`,
+сборка из исходников со списками пакетов для Ubuntu/Debian, Arch (проверено) и Fedora (не проверялось — имена пакетов
+по памяти, ffmpeg и mpv из RPM Fusion).
+
+**Не сделано / неочевидное:**
+- Fedora не проверялась; список пакетов в README — без проверки.
+- Сборка из исходников на Ubuntu с нуля не проверялась (только пакетом в 8.2); `libclang-dev` в списке с запасом — на ПК
+  bindgen работает и с одним `libclang1-21`.
+- Этап 8 закрыт по коду; приёмка — полный цикл из `.deb` пользователем (п. 28 STATUS).

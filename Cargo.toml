@@ -39,5 +39,11 @@ tempfile = "3"
 glow = "0.17"
 eframe = { version = "0.36", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
 
+# Сборка пакета: `tools/package-deb.sh`. Отдельный каталог target/dist — ggml здесь собран без GGML_NATIVE.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = true
+
 [profile.dev.package."*"]
 opt-level = 2

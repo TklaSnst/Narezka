@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=ShortsCutter
+GenericName=Shorts Editor
+GenericName[ru]=Нарезка шортсов
+Comment=Cut a long video into vertical 9:16 shorts with local AI
+Comment[ru]=Нарезка длинного видео на вертикальные шортсы 9:16 локальным ИИ
+Exec=shortscutter %F
+Icon=shortscutter
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=shorts;reels;video;cut;subtitles;whisper;
+Keywords[ru]=шортсы;видео;нарезка;субтитры;
+MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/mpeg;
+StartupWMClass=shortscutter

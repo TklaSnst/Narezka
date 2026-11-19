@@ -10,9 +10,9 @@
 - [x] Обработка крайних случаев: файл без звука, VFR-видео, повёрнутое видео (rotation metadata), очень короткий исходник
 
 ## Шаг 8.2 — Пакет
-- [ ] `cargo-deb`: зависимости (ffmpeg, libmpv, mesa-va-drivers, mesa-vulkan-drivers), `.desktop`-файл, иконка
-- [ ] Модели не входят в пакет — скачиваются при первом запуске
-- [ ] Установка на чистую Ubuntu (VM или контейнер) и запуск
+- [x] `cargo-deb`: зависимости (ffmpeg, libmpv, mesa-va-drivers, mesa-vulkan-drivers), `.desktop`-файл, иконка
+- [x] Модели не входят в пакет — скачиваются при первом запуске
+- [x] Установка на чистую Ubuntu (VM или контейнер) и запуск
 
 ## Шаг 8.3 — Совместимость
 - [ ] Проверка на одном не-Debian дистрибутиве (Arch или Fedora) из исходников
@@ -63,3 +63,40 @@ libx264): без звука, VFR-mkv, поворот 90°, исходник 0.4 
   удалённый `~/work/local-models`). Приложение видит её как отсутствующую и предлагает «Скачать модели (6.0 ГБ)»;
   загрузка пишет `.part` и `rename` заменяет саму ссылку.
 - Для пакета (8.2): whisper.cpp собирается с `GGML_NATIVE` (под этот CPU) — выключить (заметка этапа 2).
+
+### Шаг 8.2 (2026-11-19) — выполнен по коду
+
+**Сборка пакета:** `./tools/package-deb.sh` → `target/debian/shortscutter_0.1.0-1_amd64.deb` (20 МБ). Нужен `cargo-deb`
+(`cargo install cargo-deb --locked`, на ПК стоит 3.8.0). Скрипт: `SC_PORTABLE=1 cargo build --profile dist`, копирует
+`llama-server` из `OUT_DIR` sc-llama в `target/dist/`, затем `cargo deb --profile dist --no-build`. Метаданные — в
+`crates/app/Cargo.toml` (`[package.metadata.deb]`), `.desktop` и иконка (SVG) — в `packaging/`.
+
+**Состав:** `/usr/bin/shortscutter`, `/usr/lib/shortscutter/llama-server` (не в `/usr/bin` — там может быть
+`llama-server` из пакета llama.cpp), `shortscutter.desktop` (`StartupWMClass=shortscutter`, MimeType видео — «Открыть с
+помощью» передаёт файлы аргументами), иконка в `hicolor/scalable`. `sc_llama::server_binary` теперь ищет и
+`<каталог exe>/../lib/shortscutter/llama-server`.
+Depends: `$auto` (libmpv2, libvulkan1, libstdc++6, libc6) + `ffmpeg`, `xdg-desktop-portal`; Recommends:
+`mesa-va-drivers`, `mesa-vulkan-drivers`, портал-бэкенд (на NVIDIA mesa не нужна — поэтому не Depends).
+
+**CPU:** профиль `dist` (release + thin LTO + strip) — отдельный `target/dist`, где whisper.cpp и llama.cpp собраны с
+`SC_PORTABLE=1`: `GGML_NATIVE=OFF`, AVX/AVX2/FMA/F16C/BMI2 (x86-64-v3). Обычные `cargo build/run` по-прежнему с
+`GGML_NATIVE` — переключение переменной не пересобирает их кэш. Проверено: `target/dist/examples/transcribe` на
+`media/twitch-1min.wav` — 101 слово, 7.9 с (Vulkan, RX 6600), как и раньше.
+
+**Модели** в пакет не входят: на первом запуске «Импорт» показывает «Скачать модели (8.2 ГБ)» / «Указать файл модели…»
+(механизм был с этапа 2).
+
+**Чистая Ubuntu:** контейнер `ubuntu:26.04` на VPS (docker; на ПК нет ни docker/podman, ни непривилегированных userns —
+AppArmor). `apt install ./shortscutter.deb` ставит всё сам, у бинарников нет ненайденных библиотек, `llama-server
+--version` работает, `desktop-file-validate` чист. Запуск под пользователем в headless sway (pixman, без GPU): окно
+открывается, «GPU: нет», кодеры CPU (libx264/x265/svtav1/vpx/prores) найдены, предложение скачать модели; каталоги
+`~/.config|.local/share|.cache/shortscutter` созданы. Сценарий — вне репо (`/root/work/debtest/test.sh` на VPS).
+
+**Не сделано / неочевидное:**
+- Полный цикл из пакета (импорт → нарезка → оформление → рендер) на настоящем GPU — приёмка пользователем (п. 28 STATUS).
+- CPU без AVX2 (до ~2013–2015) упадёт с SIGILL в ggml даже при расчёте на GPU. Варианты под разные CPU
+  (`GGML_CPU_ALL_VARIANTS`) требуют `GGML_BACKEND_DL` — динамические бэкенды, отказались ради простоты.
+- Иконка только SVG (на ПК нет rsvg/inkscape для PNG); лаунчеры Hyprland (wofi, fuzzel, rofi) и GNOME SVG понимают.
+- В бинарник зашит путь `SC_LLAMA_SERVER_BUILT` из машины сборки — это последний запасной путь, в пакете не используется.
+- Версия пакета `0.1.0-1` — из `workspace.package.version`.
+

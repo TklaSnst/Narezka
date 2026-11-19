@@ -15,7 +15,9 @@ fn main() {
     println!("cargo:rerun-if-changed={}", root.join("include/whisper.h").display());
     println!("cargo:rerun-if-changed={}", root.join("CMakeLists.txt").display());
 
-    let dst = cmake::Config::new(&root)
+    let mut cfg = cmake::Config::new(&root);
+    cpu_flags(&mut cfg);
+    let dst = cfg
         .profile("Release")
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("GGML_VULKAN", "ON")
@@ -55,4 +57,17 @@ fn gcc_include() -> Option<String> {
     let out = Command::new("gcc").arg("-print-file-name=include").output().ok()?;
     let dir = String::from_utf8(out.stdout).ok()?.trim().to_string();
     Path::new(&dir).join("stdbool.h").exists().then_some(dir)
+}
+
+/// `SC_PORTABLE=1` (сборка пакета): ggml не под этот CPU (`GGML_NATIVE`), а под x86-64-v3 —
+/// AVX2/FMA/F16C/BMI2, любой x86-64 с 2015 г. Считает GPU (Vulkan), CPU-часть графа мала.
+fn cpu_flags(cfg: &mut cmake::Config) {
+    println!("cargo:rerun-if-env-changed=SC_PORTABLE");
+    if env::var_os("SC_PORTABLE").is_none_or(|v| v.is_empty() || v == "0") {
+        return;
+    }
+    cfg.define("GGML_NATIVE", "OFF");
+    for flag in ["GGML_SSE42", "GGML_AVX", "GGML_AVX2", "GGML_FMA", "GGML_F16C", "GGML_BMI2"] {
+        cfg.define(flag, "ON");
+    }
 }

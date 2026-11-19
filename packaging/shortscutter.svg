@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Тёмный «терминальный» квадрат и вертикальный кадр 9:16 с ножницами-разрезом -->
+  <rect x="8" y="8" width="240" height="240" rx="44" fill="#0f1115"/>
+  <rect x="8" y="8" width="240" height="240" rx="44" fill="none" stroke="#2a2f38" stroke-width="4"/>
+  <rect x="84" y="36" width="88" height="156" rx="12" fill="#1a1e25" stroke="#f5c400" stroke-width="8"/>
+  <path d="M114 92 L148 114 L114 136 Z" fill="#f5c400"/>
+  <path d="M52 214 H204" stroke="#3ddc84" stroke-width="8" stroke-linecap="round" stroke-dasharray="14 12"/>
+</svg>

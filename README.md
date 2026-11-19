@@ -6,6 +6,13 @@
 Нужны системные ffmpeg и libmpv, для сборки — cmake, компилятор C++, заголовки Vulkan и `glslc` (whisper.cpp собирается
 из `third_party/` статически; первая сборка — несколько минут). Модели распознавания приложение предложит скачать само.
 
+## Пакет .deb
+
+Сборка: `cargo install cargo-deb --locked`, затем `./tools/package-deb.sh` → `target/debian/shortscutter_*_amd64.deb`.
+Установка: `sudo apt install ./target/debian/shortscutter_*_amd64.deb` (зависимости — ffmpeg, libmpv2, libvulkan1,
+xdg-desktop-portal — подтянутся сами). Нужен CPU x86-64 с AVX2 и GPU с Vulkan; модели (~8 ГБ) приложение скачает
+при первом запуске в `~/.cache/shortscutter/models`.
+
 ## Hyprland
 
 Главное окно: класс (`app_id`) `shortscutter`, заголовок `ShortsCutter`. Диалоги выбора файлов открывает

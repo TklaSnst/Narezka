@@ -3,6 +3,7 @@ name = "shortscutter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Long video → vertical 9:16 shorts: local Whisper + LLM cutting, templates, batch render"
 
 [dependencies]
 sc-core.workspace = true
@@ -26,3 +27,26 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 libc = "0.2"
 # wl_display окна для mpv (VAAPI на Wayland); версия — как у eframe.
 raw-window-handle = "0.6"
+
+# Пакет .deb: `tools/package-deb.sh` (собирает профилем `dist` с SC_PORTABLE=1 и кладёт llama-server рядом).
+[package.metadata.deb]
+name = "shortscutter"
+maintainer = "TklaSnst <blumevgen@gmail.com>"
+copyright = "2026, TklaSnst"
+section = "video"
+priority = "optional"
+extended-description = """\
+Desktop app: a long video becomes a batch of vertical 9:16 shorts. Speech recognition (whisper.cpp) and \
+meaning-based cutting (llama.cpp) run locally on the GPU via Vulkan; look by templates, subtitles, banners, \
+ad inserts and batch rendering via ffmpeg (VAAPI when available). AI models (~8 GB) are downloaded on first use."""
+# $auto — библиотеки по ldd (libmpv2, libvulkan1, libc…). ffmpeg вызывается процессом — отдельно.
+depends = "$auto, ffmpeg, xdg-desktop-portal"
+# GPU AMD/Intel: VAAPI-кодирование и Vulkan для ИИ. На NVIDIA — свои драйверы, поэтому не Depends.
+recommends = "mesa-va-drivers, mesa-vulkan-drivers, xdg-desktop-portal-gtk | xdg-desktop-portal-backend"
+assets = [
+    ["target/release/shortscutter", "usr/bin/", "755"],
+    ["target/release/llama-server", "usr/lib/shortscutter/", "755"],
+    ["../../packaging/shortscutter.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/shortscutter.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../README.md", "usr/share/doc/shortscutter/README.md", "644"],
+]

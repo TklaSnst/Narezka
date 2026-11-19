@@ -43,13 +43,18 @@ const START_TIMEOUT: Duration = Duration::from_secs(180);
 /// Предложений в одном запросе эмбеддингов.
 const EMBED_CHUNK: usize = 64;
 
-/// Путь к `llama-server`: `SC_LLAMA_SERVER` из окружения → рядом с исполняемым файлом → собранный `build.rs`.
+/// Путь к `llama-server`: `SC_LLAMA_SERVER` из окружения → рядом с исполняемым файлом → `../lib/shortscutter/`
+/// от него (пакет: `/usr/bin/shortscutter` и `/usr/lib/shortscutter/llama-server`) → собранный `build.rs`.
 pub fn server_binary() -> PathBuf {
     if let Some(p) = std::env::var_os("SC_LLAMA_SERVER") {
         return p.into();
     }
-    let near = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("llama-server")));
-    near.filter(|p| p.is_file()).unwrap_or_else(|| PathBuf::from(env!("SC_LLAMA_SERVER_BUILT")))
+    let exe_dir = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.to_path_buf()));
+    exe_dir
+        .into_iter()
+        .flat_map(|d| [d.join("llama-server"), d.join("../lib/shortscutter/llama-server")])
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from(env!("SC_LLAMA_SERVER_BUILT")))
 }
 
 #[derive(Debug, Clone)]
